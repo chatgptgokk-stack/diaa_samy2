@@ -34,7 +34,7 @@ from telegram.ext import (
 )
 
 # -------------------------------------------------------------
-# 1. خادم ويب مصغر للحفاظ على استمرارية الخدمة
+# 1. خادم ويب مصغر للحفاظ على استمرارية الخدمة في Render
 # -------------------------------------------------------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -51,7 +51,7 @@ def run_web_server():
         logging.error(f"Web server error: {e}")
 
 # -------------------------------------------------------------
-# 2. الإعدادات وقاعدة البيانات الدائمة
+# 2. الإعدادات وإدارة قاعدة البيانات مع التثبيت التلقائي (Auto-Commit)
 # -------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
@@ -74,112 +74,131 @@ def init_db():
     id_col = "id SERIAL PRIMARY KEY" if is_pg else "id INTEGER PRIMARY KEY AUTOINCREMENT"
     ts_default = "CURRENT_TIMESTAMP"
 
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS publications (
-                {id_col},
-                media_type TEXT NOT NULL,
-                file_id TEXT NOT NULL,
-                cover_file_id TEXT,
-                caption TEXT,
-                channel_msg_id INTEGER,
-                created_at TIMESTAMP DEFAULT {ts_default}
-            )
-        """)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS media_events (
-                {id_col},
-                lecture_id INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                user_id BIGINT NOT NULL,
-                username TEXT,
-                full_name TEXT,
-                event_time TIMESTAMP DEFAULT {ts_default}
-            )
-        """)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS comments (
-                {id_col},
-                lecture_id INTEGER NOT NULL,
-                user_id BIGINT NOT NULL,
-                username TEXT,
-                full_name TEXT,
-                comment_type TEXT NOT NULL,
-                comment_content TEXT,
-                created_at TIMESTAMP DEFAULT {ts_default}
-            )
-        """)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS private_questions (
-                {id_col},
-                user_id BIGINT NOT NULL,
-                username TEXT,
-                full_name TEXT,
-                question_type TEXT NOT NULL,
-                question_content TEXT,
-                created_at TIMESTAMP DEFAULT {ts_default}
-            )
-        """)
-        conn.commit()
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS publications (
+                        {id_col},
+                        media_type TEXT NOT NULL,
+                        file_id TEXT NOT NULL,
+                        cover_file_id TEXT,
+                        caption TEXT,
+                        channel_msg_id INTEGER,
+                        created_at TIMESTAMP DEFAULT {ts_default}
+                    )
+                """)
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS media_events (
+                        {id_col},
+                        lecture_id INTEGER NOT NULL,
+                        event_type TEXT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        username TEXT,
+                        full_name TEXT,
+                        event_time TIMESTAMP DEFAULT {ts_default}
+                    )
+                """)
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS comments (
+                        {id_col},
+                        lecture_id INTEGER NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        username TEXT,
+                        full_name TEXT,
+                        comment_type TEXT NOT NULL,
+                        comment_content TEXT,
+                        created_at TIMESTAMP DEFAULT {ts_default}
+                    )
+                """)
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS private_questions (
+                        {id_col},
+                        user_id BIGINT NOT NULL,
+                        username TEXT,
+                        full_name TEXT,
+                        question_type TEXT NOT NULL,
+                        question_content TEXT,
+                        created_at TIMESTAMP DEFAULT {ts_default}
+                    )
+                """)
+        logging.info("تم التحقق من جداول قاعدة البيانات وتجهيزها بنجاح.")
+    finally:
+        conn.close()
 
 def log_event(lecture_id: int, event_type: str, user):
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            INSERT INTO media_events (lecture_id, event_type, user_id, username, full_name)
-            VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
-        """, (lecture_id, event_type, user.id, user.username or "بدون معرف", user.full_name or "مجهول"))
-        conn.commit()
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"""
+                    INSERT INTO media_events (lecture_id, event_type, user_id, username, full_name)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+                """, (lecture_id, event_type, user.id, user.username or "بدون معرف", user.full_name or "مجهول"))
+    finally:
+        conn.close()
 
 def save_publication(media_type: str, file_id: str, cover_file_id: str, caption: str) -> int:
     is_pg = bool(DATABASE_URL and psycopg2)
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        if is_pg:
-            cursor.execute("""
-                INSERT INTO publications (media_type, file_id, cover_file_id, caption)
-                VALUES (%s, %s, %s, %s) RETURNING id
-            """, (media_type, file_id, cover_file_id, caption))
-            pub_id = cursor.fetchone()[0]
-        else:
-            cursor.execute("""
-                INSERT INTO publications (media_type, file_id, cover_file_id, caption)
-                VALUES (?, ?, ?, ?)
-            """, (media_type, file_id, cover_file_id, caption))
-            pub_id = cursor.lastrowid
-        conn.commit()
-        return pub_id
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cursor:
+                if is_pg:
+                    cursor.execute("""
+                        INSERT INTO publications (media_type, file_id, cover_file_id, caption)
+                        VALUES (%s, %s, %s, %s) RETURNING id
+                    """, (media_type, file_id, cover_file_id, caption))
+                    row = cursor.fetchone()
+                    return row[0]
+                else:
+                    cursor.execute("""
+                        INSERT INTO publications (media_type, file_id, cover_file_id, caption)
+                        VALUES (?, ?, ?, ?)
+                    """, (media_type, file_id, cover_file_id, caption))
+                    return cursor.lastrowid
+    finally:
+        conn.close()
 
 def update_publication_msg_id(publication_id: int, msg_id: int):
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"UPDATE publications SET channel_msg_id = {ph} WHERE id = {ph}", (msg_id, publication_id))
-        conn.commit()
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"UPDATE publications SET channel_msg_id = {ph} WHERE id = {ph}", (msg_id, publication_id))
+    finally:
+        conn.close()
 
 def get_publication(publication_id: int):
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT media_type, file_id, cover_file_id, caption, channel_msg_id FROM publications WHERE id = {ph}", (publication_id,))
-        return cursor.fetchone()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"SELECT media_type, file_id, cover_file_id, caption, channel_msg_id FROM publications WHERE id = {ph}", (publication_id,))
+            return cursor.fetchone()
+    finally:
+        conn.close()
 
 def get_all_materials_by_type(media_type_filter: str):
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT id, caption FROM publications 
-            WHERE media_type LIKE {ph} 
-            ORDER BY id DESC
-        """, (f"%{media_type_filter}%",))
-        return cursor.fetchall()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT id, caption FROM publications 
+                WHERE media_type LIKE {ph} 
+                ORDER BY id DESC
+            """, (f"%{media_type_filter}%",))
+            return cursor.fetchall()
+    finally:
+        conn.close()
 
 # -------------------------------------------------------------
 # 3. إدارة الخط والتصميم الزخرفي الإسلامي
@@ -312,8 +331,20 @@ def extract_video_frame(video_path: str) -> io.BytesIO:
         logging.error(f"Error frame: {e}")
     return None
 
+def render_pdf_first_page(file_path: str) -> io.BytesIO:
+    doc = fitz.open(file_path)
+    if len(doc) > 0:
+        page = doc[0]
+        mat = fitz.Matrix(2.0, 2.0)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img_bytes = pix.tobytes("jpeg")
+        doc.close()
+        return io.BytesIO(img_bytes)
+    doc.close()
+    return None
+
 # -------------------------------------------------------------
-# 4. لوحات الأزرار
+# 4. لوحات الأزرار وتوليد الروابط
 # -------------------------------------------------------------
 def build_channel_control_panel(bot_uname: str):
     return InlineKeyboardMarkup([
@@ -350,7 +381,7 @@ def build_custom_keyboard(bot_uname: str, lecture_id: int, primary_text: str, pr
     ])
 
 # -------------------------------------------------------------
-# 5. معالجة أوامر الروابط العميقة (Deep Linking) مع إرسال الإشعار دائماً
+# 5. معالجة أوامر الروابط العميقة وإشعارات المتابعة
 # -------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -364,7 +395,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• **إرسال فيديو:** كادر سينمائي واعتماد الكابشن.\n"
                 "• **إرسال صوت:** تصميم إسلامي ملكي بالعنوان المطلوب.\n"
                 "• **إرسال صورة:** مسودة ومعاينة للبوسترات قبل النشر.\n"
-                "• **إرسال PDF:** استخراج فوري للغلاف مع زر التحميل المباشر."
+                "• **إرسال PDF:** استخراج فوري للغلاف وزر التحميل المباشر."
             )
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
@@ -415,7 +446,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # إرسال إشعار المشاهدة
     elif payload.startswith("watch_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -438,7 +468,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_video(video=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
-    # إرسال إشعار الاستماع
     elif payload.startswith("listen_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -461,7 +490,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_audio(audio=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
-    # إرسال إشعار فتح/تحميل الكتاب
     elif payload.startswith("doc_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -534,30 +562,14 @@ async def post_menu_to_channel(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("✅ تم تحديث ونشر لوحة الأزرار في القناة بنجاح! يمكنك تثبيتها (Pin) في أعلى القناة الآن.")
 
 # -------------------------------------------------------------
-# 7. استخراج غلاف الصفحة الأولى من PDF بشكل قطعي
-# -------------------------------------------------------------
-def render_pdf_first_page(file_path: str) -> io.BytesIO:
-    doc = fitz.open(file_path)
-    if len(doc) > 0:
-        page = doc[0]
-        zoom = 2.0
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        img_bytes = pix.tobytes("jpeg")
-        doc.close()
-        return io.BytesIO(img_bytes)
-    doc.close()
-    return None
-
-# -------------------------------------------------------------
-# 8. تجهيز الوسائط والمسودات التحريرية
+# 7. تجهيز الوسائط والمسودات التحريرية
 # -------------------------------------------------------------
 async def handle_admin_media_preparation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         return
 
     msg = update.message
-    bot_msg = await msg.reply_text("⏳ جاري سحب الملف واستخراج الصفحة الأولى كغلاف...")
+    bot_msg = await msg.reply_text("⏳ جاري تجهيز المعاينة...")
 
     if msg.photo:
         file_obj = msg.photo[-1]
@@ -697,7 +709,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             )
 
 # -------------------------------------------------------------
-# 9. التفاعل والأسئلة السرية والبحث
+# 8. التفاعل والأسئلة السرية والبحث
 # -------------------------------------------------------------
 async def handle_user_interactions_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -737,13 +749,16 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         q_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
         q_type = "voice" if update.message.voice else "text"
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                INSERT INTO private_questions (user_id, username, full_name, question_type, question_content)
-                VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
-            """, (user.id, user.username or "بدون معرف", user.full_name or "مجهول", q_type, q_content))
-            conn.commit()
+        conn = get_db_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(f"""
+                        INSERT INTO private_questions (user_id, username, full_name, question_type, question_content)
+                        VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+                    """, (user.id, user.username or "بدون معرف", user.full_name or "مجهول", q_type, q_content))
+        finally:
+            conn.close()
 
         reply_member_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("✍️ الإجابة على سؤال العضو", callback_data=f"answer_user_{user.id}")]
@@ -780,13 +795,16 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         c_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
         c_type = "voice" if update.message.voice else "text"
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                INSERT INTO comments (lecture_id, user_id, username, full_name, comment_type, comment_content)
-                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})
-            """, (lecture_id, user.id, user.username or "بدون معرف", user.full_name or "مجهول", c_type, c_content))
-            conn.commit()
+        conn = get_db_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(f"""
+                        INSERT INTO comments (lecture_id, user_id, username, full_name, comment_type, comment_content)
+                        VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})
+                    """, (lecture_id, user.id, user.username or "بدون معرف", user.full_name or "مجهول", c_type, c_content))
+        finally:
+            conn.close()
 
         await context.bot.send_message(
             chat_id=ADMIN_USER_ID,
@@ -804,10 +822,13 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
 
     elif action == "awaiting_search_query":
         query = update.message.text
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"SELECT id, caption, media_type FROM publications WHERE caption LIKE {ph} ORDER BY id DESC", (f"%{query}%",))
-            results = cursor.fetchall()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT id, caption, media_type FROM publications WHERE caption LIKE {ph} ORDER BY id DESC", (f"%{query}%",))
+                results = cursor.fetchall()
+        finally:
+            conn.close()
 
         if not results:
             await update.message.reply_text(f"لم يتم العثور على أي نتائج مطابقة لـ: `{query}`.", parse_mode="Markdown")
@@ -881,7 +902,7 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
                 )
 
 # -------------------------------------------------------------
-# 10. أزرار القوائم والردود
+# 9. أزرار القوائم والردود
 # -------------------------------------------------------------
 async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1014,7 +1035,7 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text(f"✅ **تم النشر في القناة بنجاح (المعرف: `{pub_id}`).**")
 
 # -------------------------------------------------------------
-# 11. تشغيل التطبيق
+# 10. تشغيل التطبيق
 # -------------------------------------------------------------
 def main():
     if not BOT_TOKEN:
