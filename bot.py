@@ -153,7 +153,7 @@ def get_font(size=64):
     return ImageFont.load_default()
 
 def create_islamic_audio_card(title_text: str) -> io.BytesIO:
-    """تصميم بطاقة إسلامية أنيقة مع ضبط رسم الحروف العربية من اليمين لليسار"""
+    """تصميم بطاقة إسلامية أنيقة مع رسم الحروف العربية من اليمين لليسار"""
     ensure_font_downloaded()
 
     width, height = 1080, 1080
@@ -182,10 +182,9 @@ def create_islamic_audio_card(title_text: str) -> io.BytesIO:
     draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=320, end=40, fill=gold_color, width=3)
     draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=140, end=220, fill=gold_color, width=3)
 
-    # 4. تشكيل ووصل الحروف العربية فقط دون تكرار العكس
+    # 4. تشكيل الحروف العربية لتكون متصلة
     display_title = title_text if title_text else "تسجيل صوتي مبارك"
     try:
-        # تشكيل الحروف لتكون متصلة
         reshaped_text = arabic_reshaper.reshape(display_title)
     except Exception:
         reshaped_text = display_title
@@ -260,10 +259,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         if user.id == ADMIN_USER_ID:
             msg = (
-                "👋 **مرحباً بك يا مدير القناة في لوحة التحكم التحريرية:**\n\n"
-                "• **إرسال فيديو:** يستخرج البوت كادراً سينمائياً ويطلب منك العنوان قبل النشر.\n"
-                "• **إرسال صوت:** يصنع البوت لوحة إسلامية بالعنوان المختار ويطلب منك الكابشن قبل النشر.\n"
-                "• لن يُرفع الملف في القناة إطلاقاً بل يستلمه المتابع بالخاص."
+                "👋 **مرحباً بك يا مدير القناة في لوحة التحكم:**\n\n"
+                "• **الفيديو:** استخراج كادر سينمائي أنيق واعتماد الكابشن.\n"
+                "• **الصوت:** توليد تصميم زخرفي إسلامي بالعنوان المطلوب.\n"
+                "• **الصور:** مسودة ومعاينة للبوسترات والبطاقات قبل النشر.\n"
+                "• **الكتب (PDF):** استخراج صورة الغلاف وتجهيز زر التحميل."
             )
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
@@ -272,6 +272,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     payload = args[0]
 
+    # أ) مشاهدة الفيديو
     if payload.startswith("watch_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -280,16 +281,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(lecture_id, "watch_video", user)
-        await context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=f"🔒 **إشعار مشاهدة فيديو (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
-            parse_mode="Markdown"
-        )
+        if user.id != ADMIN_USER_ID:
+            await context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=f"🔒 **إشعار مشاهدة فيديو (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
+                parse_mode="Markdown"
+            )
         if pub[0] == "doc_video":
             await update.message.reply_document(document=pub[1], caption=pub[3] or "", parse_mode="HTML")
         else:
             await update.message.reply_video(video=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
+    # ب) استماع للصوت
     elif payload.startswith("listen_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -298,16 +301,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(lecture_id, "listen_audio", user)
-        await context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=f"🔒 **إشعار استماع لخطبة (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
-            parse_mode="Markdown"
-        )
+        if user.id != ADMIN_USER_ID:
+            await context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=f"🔒 **إشعار استماع لخطبة (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
+                parse_mode="Markdown"
+            )
         if pub[0] == "voice":
             await update.message.reply_voice(voice=pub[1], caption=pub[3] or "")
         else:
             await update.message.reply_audio(audio=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
+    # ج) فتح / تحميل الكتاب
     elif payload.startswith("doc_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -316,13 +321,32 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(lecture_id, "download_doc", user)
-        await context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=f"🔒 **إشعار فتح / تحميل كتاب (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
-            parse_mode="Markdown"
-        )
+        if user.id != ADMIN_USER_ID:
+            await context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=f"🔒 **إشعار فتح / تحميل كتاب (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
+                parse_mode="Markdown"
+            )
         await update.message.reply_document(document=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
+    # د) استعراض الصورة الأصلية بالخاص
+    elif payload.startswith("view_"):
+        lecture_id = int(payload.split("_")[1])
+        pub = get_publication(lecture_id)
+        if not pub:
+            await update.message.reply_text("عذراً، الصورة غير متوفرة.")
+            return
+
+        log_event(lecture_id, "view_photo", user)
+        if user.id != ADMIN_USER_ID:
+            await context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=f"🔒 **إشعار استعراض صورة (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
+                parse_mode="Markdown"
+            )
+        await update.message.reply_photo(photo=pub[1], caption=pub[3] or "", parse_mode="HTML")
+
+    # هـ) التعليق
     elif payload.startswith("comment_"):
         lecture_id = int(payload.split("_")[1])
         context.user_data["action"] = "comment"
@@ -333,7 +357,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # -------------------------------------------------------------
-# 6. تجهيز الوسائط والمعاينة
+# 6. تجهيز الوسائط والمسودة
 # -------------------------------------------------------------
 async def handle_admin_media_preparation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
@@ -342,6 +366,31 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
     msg = update.message
     bot_msg = await msg.reply_text("⏳ جاري المعالجة وتجهيز المعاينة...")
 
+    # 1. الصور الفوتوغرافية والبوسترات
+    if msg.photo:
+        file_obj = msg.photo[-1]
+        context.user_data["draft"] = {
+            "media_type": "photo",
+            "file_id": file_obj.file_id,
+            "caption": msg.caption or ""
+        }
+        context.user_data["action"] = "awaiting_caption"
+
+        await bot_msg.delete()
+        confirm_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 اعتماد ونشر في القناة الآن", callback_data="confirm_publish")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="cancel_publish")]
+        ])
+        await msg.reply_photo(
+            photo=file_obj.file_id,
+            caption="🖼 **تم استلام الصورة وتجهيز المسودة!**\n\n"
+                    "✏️ **أرسل الآن نص الكابشن** المطلوب إدراجه أسفل الصورة في القناة،\n"
+                    "أو أرسل كلمة `اعتماد` (أو اضغط على زر الاعتماد بالأسفل) للنشر بالوصف الحالي مباشرة:",
+            reply_markup=confirm_markup
+        )
+        return
+
+    # 2. مقاطع الفيديو
     is_video_doc = (
         msg.document and (
             "video" in (msg.document.mime_type or "").lower() or
@@ -379,6 +428,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             )
             return
 
+    # 3. الملفات الصوتية
     elif msg.audio or msg.voice:
         file_obj = msg.audio or msg.voice
         m_type = "audio" if msg.audio else "voice"
@@ -398,6 +448,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
         )
         return
 
+    # 4. ملفات PDF
     elif msg.document and (msg.document.mime_type == "application/pdf" or (msg.document.file_name or "").lower().endswith(".pdf")):
         tg_file = await context.bot.get_file(msg.document.file_id)
         pdf_bytes = await tg_file.download_as_bytearray()
@@ -497,7 +548,13 @@ async def handle_admin_text_inputs(update: Update, context: ContextTypes.DEFAULT
                 [InlineKeyboardButton("❌ إلغاء", callback_data="cancel_publish")]
             ])
 
-            if draft.get("cover_bytes"):
+            if draft.get("media_type") == "photo":
+                await update.message.reply_photo(
+                    photo=draft["file_id"],
+                    caption=f"📋 **معاينة المنشور النهائي للبوستر:**\n\n{draft['caption']}\n\nهل تعتمد النشر في القناة الآن؟",
+                    reply_markup=confirm_markup
+                )
+            elif draft.get("cover_bytes"):
                 await update.message.reply_photo(
                     photo=io.BytesIO(draft["cover_bytes"]),
                     caption=f"📋 **معاينة المنشور النهائي:**\n\n{draft['caption']}\n\nهل تريد النشر؟",
@@ -543,13 +600,25 @@ async def handle_publish_callback(update: Update, context: ContextTypes.DEFAULT_
         elif "audio" in media_type or media_type == "voice":
             btn_text = "🎧 استمع للخطبة"
             action_pfx = "listen"
+        elif media_type == "photo":
+            btn_text = "🖼 عرض الصورة الأصلية"
+            action_pfx = "view"
         else:
             btn_text = "📥 فتح / تحميل الكتاب"
             action_pfx = "doc"
 
         reply_markup = build_custom_keyboard(bot_uname, pub_id, btn_text, action_pfx)
 
-        if cover_bytes:
+        # النشر في القناة
+        if media_type == "photo":
+            sent_msg = await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=file_id,
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+        elif cover_bytes:
             sent_msg = await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=io.BytesIO(cover_bytes),
