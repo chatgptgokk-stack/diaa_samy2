@@ -29,13 +29,13 @@ from telegram.ext import (
 )
 
 # -------------------------------------------------------------
-# 1. خادم ويب مصغر لضمان استمرارية التشغيل على Render Free
+# 1. خادم ويب مصغر للحفاظ على استمرارية الخدمة مجاناً
 # -------------------------------------------------------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is Healthy and Running!")
+        self.wfile.write(b"Bot is Active and Ready!")
 
 def run_web_server():
     try:
@@ -46,7 +46,7 @@ def run_web_server():
         logging.error(f"Web server error: {e}")
 
 # -------------------------------------------------------------
-# 2. الإعدادات
+# 2. الإعدادات وقاعدة البيانات
 # -------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
@@ -58,9 +58,6 @@ CHANNEL_ID = os.getenv("CHANNEL_ID", "@diaa_samy2")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 DB_NAME = "channel_bot_data.db"
 
-# -------------------------------------------------------------
-# 3. إدارة قاعدة البيانات
-# -------------------------------------------------------------
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -132,39 +129,44 @@ def get_publication(publication_id: int):
         return cursor.fetchone()
 
 # -------------------------------------------------------------
-# 4. محرك التصميم الزخرفي ومعالجة الخطوط
+# 3. إدارة الخط العربي والتصميم الزخرفي
 # -------------------------------------------------------------
-def get_arabic_font(size=56):
-    """تحميل خط عربي أصيل لضمان ظهور الكلمات بوضوح تام على السيرفر"""
-    font_filename = "Cairo-Bold.ttf"
-    if not os.path.exists(font_filename):
-        try:
-            font_url = "https://github.com/googlefonts/cairo/raw/main/fonts/ttf/Cairo-Bold.ttf"
-            resp = requests.get(font_url, timeout=12)
-            if resp.status_code == 200:
-                with open(font_filename, "wb") as f:
-                    f.write(resp.content)
-        except Exception as e:
-            logging.error(f"Error downloading font: {e}")
+FONT_FILE = "Amiri-Bold.ttf"
 
-    if os.path.exists(font_filename):
+def ensure_font_downloaded():
+    """تحميل خط أميري العربي تلقائياً لبيئة السيرفر عند الإقلاع وتخزينه محلياً"""
+    if not os.path.exists(FONT_FILE):
         try:
-            return ImageFont.truetype(font_filename, size)
+            url = "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Bold.ttf"
+            resp = requests.get(url, timeout=20)
+            if resp.status_code == 200:
+                with open(FONT_FILE, "wb") as f:
+                    f.write(resp.content)
+                logging.info("تم تحميل خط Amiri-Bold بنجاح.")
+        except Exception as e:
+            logging.error(f"خطأ أثناء جلب الخط: {e}")
+
+def get_font(size=64):
+    if os.path.exists(FONT_FILE):
+        try:
+            return ImageFont.truetype(FONT_FILE, size)
         except Exception:
             pass
     return ImageFont.load_default()
 
 def create_islamic_audio_card(title_text: str) -> io.BytesIO:
-    """توليد بطاقة إسلامية ملكية بزخارف عربية واضحة ومشكّلة"""
+    """تصميم بطاقة إسلامية أنيقة مع رسم النصوص العربية بوضوح"""
+    ensure_font_downloaded()
+
     width, height = 1080, 1080
-    bg_color = (15, 23, 42)       # كحلي لؤلؤي ملكي غامق
-    gold_color = (212, 175, 55)   # ذهبي ملكي
-    gold_light = (245, 222, 130)  # لمعان ذهبي
+    bg_color = (15, 23, 42)       # كحلي ملكي عميق
+    gold_color = (212, 175, 55)   # ذهبي إسلامي
+    gold_light = (245, 222, 130)  # لمعان ذهبي فاتح
 
     img = Image.new("RGB", (width, height), color=bg_color)
     draw = ImageDraw.Draw(img)
 
-    # 1. إطارات هندسية مزدوجة
+    # 1. إطارات هندسية
     draw.rectangle([(35, 35), (width - 35, height - 35)], outline=gold_color, width=4)
     draw.rectangle([(55, 55), (width - 55, height - 55)], outline=gold_light, width=2)
     draw.rectangle([(75, 75), (width - 75, height - 75)], outline=gold_color, width=1)
@@ -190,17 +192,17 @@ def create_islamic_audio_card(title_text: str) -> io.BytesIO:
     except Exception:
         bidi_text = display_title
 
-    font = get_arabic_font(size=56)
+    font = get_font(size=62)
 
     # 5. خطوط فاصلة بنقاط ذهبية
-    draw.line([(200, 480), (width - 200, 480)], fill=gold_color, width=3)
-    draw.ellipse([(center_x - 6, 474), (center_x + 6, 486)], fill=gold_light)
+    draw.line([(180, 480), (width - 180, 480)], fill=gold_color, width=3)
+    draw.ellipse([(center_x - 7, 473), (center_x + 7, 487)], fill=gold_light)
 
     # كتابة العنوان العربي بوضوح في المنتصف
     draw.text((center_x, 560), bidi_text, fill=gold_light, font=font, anchor="mm")
 
-    draw.line([(200, 640), (width - 200, 640)], fill=gold_color, width=3)
-    draw.ellipse([(center_x - 6, 634), (center_x + 6, 646)], fill=gold_light)
+    draw.line([(180, 640), (width - 180, 640)], fill=gold_color, width=3)
+    draw.ellipse([(center_x - 7, 633), (center_x + 7, 647)], fill=gold_light)
 
     output = io.BytesIO()
     img.save(output, format="JPEG", quality=95)
@@ -208,7 +210,7 @@ def create_islamic_audio_card(title_text: str) -> io.BytesIO:
     return output
 
 def extract_video_frame(video_path: str) -> io.BytesIO:
-    """استخراج كادر سينمائي من منتصف الفيديو"""
+    """استخراج كادر سينمائي من الفيديو"""
     try:
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -225,11 +227,11 @@ def extract_video_frame(video_path: str) -> io.BytesIO:
             if is_success:
                 return io.BytesIO(buffer.tobytes())
     except Exception as e:
-        logging.error(f"Error extracting frame: {e}")
+        logging.error(f"Error frame: {e}")
     return None
 
 # -------------------------------------------------------------
-# 5. الأزرار والسيمترية
+# 4. هندسة السيمترية البصرية للأزرار
 # -------------------------------------------------------------
 def build_custom_keyboard(bot_uname: str, lecture_id: int, primary_text: str, primary_action_prefix: str, channel_msg_id: int = None):
     primary_url = f"https://t.me/{bot_uname}?start={primary_action_prefix}_{lecture_id}"
@@ -251,7 +253,7 @@ def build_custom_keyboard(bot_uname: str, lecture_id: int, primary_text: str, pr
     ])
 
 # -------------------------------------------------------------
-# 6. معالجة أوامر Start والروابط العميقة
+# 5. الروابط العميقة (Deep Linking)
 # -------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -333,7 +335,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # -------------------------------------------------------------
-# 7. التجهيز والمعاينة
+# 6. تجهيز الوسائط والمعاينة
 # -------------------------------------------------------------
 async def handle_admin_media_preparation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
@@ -374,7 +376,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             await msg.reply_photo(
                 photo=frame_bytes,
                 caption="🎬 **تم استخراج هذا الكادر الأنيق كثيمبل للمقطع!**\n\n"
-                        "✏️ **أرسل الآن العنوان والكابشن** المطلوب للمنشور:\n"
+                        "✏️️ **أرسل الآن العنوان والكابشن** المطلوب للمنشور:\n"
                         "(أو أرسل كلمة `اعتماد` لاستخدام الوصف الحالي)."
             )
             return
@@ -429,7 +431,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             await msg.reply_text("📚 أرسل نص الكابشن لبطاقة الكتاب، أو أرسل `اعتماد`.")
 
 # -------------------------------------------------------------
-# 8. إدخال النصوص والتعليقات
+# 7. التفاعل وإدخال النصوص
 # -------------------------------------------------------------
 async def handle_admin_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -510,7 +512,7 @@ async def handle_admin_text_inputs(update: Update, context: ContextTypes.DEFAULT
                 )
 
 # -------------------------------------------------------------
-# 9. تنفيذ النشر الفعلي
+# 8. تنفيذ النشر الفعلي
 # -------------------------------------------------------------
 async def handle_publish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -573,13 +575,14 @@ async def handle_publish_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_caption(f"✅ **تم النشر في القناة بنجاح (المعرف: `{pub_id}`).**")
 
 # -------------------------------------------------------------
-# 10. تشغيل التطبيق
+# 9. تشغيل التطبيق
 # -------------------------------------------------------------
 def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN غير مضبوط!")
 
     init_db()
+    ensure_font_downloaded()
 
     web_thread = Thread(target=run_web_server, daemon=True)
     web_thread.start()
