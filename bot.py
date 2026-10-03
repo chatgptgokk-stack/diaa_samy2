@@ -1,7 +1,7 @@
 import os
 import io
-import fitz  # PyMuPDF
-import cv2   # OpenCV
+import pymupdf  # تم التحديث لتفادي تحذيرات fitz القديمة
+import cv2      # OpenCV
 import sqlite3
 import logging
 import requests
@@ -34,7 +34,7 @@ from telegram.ext import (
 )
 
 # -------------------------------------------------------------
-# 1. خادم ويب مصغر للحفاظ على استمرارية الخدمة في Render
+# 1. خادم ويب مصغر للحفاظ على استمرارية الخدمة
 # -------------------------------------------------------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -51,7 +51,7 @@ def run_web_server():
         logging.error(f"Web server error: {e}")
 
 # -------------------------------------------------------------
-# 2. الإعدادات وإدارة قاعدة البيانات مع التثبيت التلقائي (Auto-Commit)
+# 2. الإعدادات وقاعدة البيانات الدائمة (Supabase / SQLite)
 # -------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
@@ -75,129 +75,135 @@ def init_db():
     ts_default = "CURRENT_TIMESTAMP"
 
     conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        with conn:
-            with conn.cursor() as cursor:
-                cursor.execute(f"""
-                    CREATE TABLE IF NOT EXISTS publications (
-                        {id_col},
-                        media_type TEXT NOT NULL,
-                        file_id TEXT NOT NULL,
-                        cover_file_id TEXT,
-                        caption TEXT,
-                        channel_msg_id INTEGER,
-                        created_at TIMESTAMP DEFAULT {ts_default}
-                    )
-                """)
-                cursor.execute(f"""
-                    CREATE TABLE IF NOT EXISTS media_events (
-                        {id_col},
-                        lecture_id INTEGER NOT NULL,
-                        event_type TEXT NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        username TEXT,
-                        full_name TEXT,
-                        event_time TIMESTAMP DEFAULT {ts_default}
-                    )
-                """)
-                cursor.execute(f"""
-                    CREATE TABLE IF NOT EXISTS comments (
-                        {id_col},
-                        lecture_id INTEGER NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        username TEXT,
-                        full_name TEXT,
-                        comment_type TEXT NOT NULL,
-                        comment_content TEXT,
-                        created_at TIMESTAMP DEFAULT {ts_default}
-                    )
-                """)
-                cursor.execute(f"""
-                    CREATE TABLE IF NOT EXISTS private_questions (
-                        {id_col},
-                        user_id BIGINT NOT NULL,
-                        username TEXT,
-                        full_name TEXT,
-                        question_type TEXT NOT NULL,
-                        question_content TEXT,
-                        created_at TIMESTAMP DEFAULT {ts_default}
-                    )
-                """)
-        logging.info("تم التحقق من جداول قاعدة البيانات وتجهيزها بنجاح.")
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS publications (
+                {id_col},
+                media_type TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                cover_file_id TEXT,
+                caption TEXT,
+                channel_msg_id INTEGER,
+                created_at TIMESTAMP DEFAULT {ts_default}
+            )
+        """)
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS media_events (
+                {id_col},
+                lecture_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                user_id BIGINT NOT NULL,
+                username TEXT,
+                full_name TEXT,
+                event_time TIMESTAMP DEFAULT {ts_default}
+            )
+        """)
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS comments (
+                {id_col},
+                lecture_id INTEGER NOT NULL,
+                user_id BIGINT NOT NULL,
+                username TEXT,
+                full_name TEXT,
+                comment_type TEXT NOT NULL,
+                comment_content TEXT,
+                created_at TIMESTAMP DEFAULT {ts_default}
+            )
+        """)
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS private_questions (
+                {id_col},
+                user_id BIGINT NOT NULL,
+                username TEXT,
+                full_name TEXT,
+                question_type TEXT NOT NULL,
+                question_content TEXT,
+                created_at TIMESTAMP DEFAULT {ts_default}
+            )
+        """)
+        conn.commit()
+        logging.info("قاعدة البيانات جاهزة بنجاح.")
     finally:
+        cursor.close()
         conn.close()
 
 def log_event(lecture_id: int, event_type: str, user):
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
     conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        with conn:
-            with conn.cursor() as cursor:
-                cursor.execute(f"""
-                    INSERT INTO media_events (lecture_id, event_type, user_id, username, full_name)
-                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
-                """, (lecture_id, event_type, user.id, user.username or "بدون معرف", user.full_name or "مجهول"))
+        cursor.execute(f"""
+            INSERT INTO media_events (lecture_id, event_type, user_id, username, full_name)
+            VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+        """, (lecture_id, event_type, user.id, user.username or "بدون معرف", user.full_name or "مجهول"))
+        conn.commit()
     finally:
+        cursor.close()
         conn.close()
 
 def save_publication(media_type: str, file_id: str, cover_file_id: str, caption: str) -> int:
     is_pg = bool(DATABASE_URL and psycopg2)
     conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        with conn:
-            with conn.cursor() as cursor:
-                if is_pg:
-                    cursor.execute("""
-                        INSERT INTO publications (media_type, file_id, cover_file_id, caption)
-                        VALUES (%s, %s, %s, %s) RETURNING id
-                    """, (media_type, file_id, cover_file_id, caption))
-                    row = cursor.fetchone()
-                    return row[0]
-                else:
-                    cursor.execute("""
-                        INSERT INTO publications (media_type, file_id, cover_file_id, caption)
-                        VALUES (?, ?, ?, ?)
-                    """, (media_type, file_id, cover_file_id, caption))
-                    return cursor.lastrowid
+        if is_pg:
+            cursor.execute("""
+                INSERT INTO publications (media_type, file_id, cover_file_id, caption)
+                VALUES (%s, %s, %s, %s) RETURNING id
+            """, (media_type, file_id, cover_file_id, caption))
+            pub_id = cursor.fetchone()[0]
+        else:
+            cursor.execute("""
+                INSERT INTO publications (media_type, file_id, cover_file_id, caption)
+                VALUES (?, ?, ?, ?)
+            """, (media_type, file_id, cover_file_id, caption))
+            pub_id = cursor.lastrowid
+        conn.commit()
+        return pub_id
     finally:
+        cursor.close()
         conn.close()
 
 def update_publication_msg_id(publication_id: int, msg_id: int):
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
     conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        with conn:
-            with conn.cursor() as cursor:
-                cursor.execute(f"UPDATE publications SET channel_msg_id = {ph} WHERE id = {ph}", (msg_id, publication_id))
+        cursor.execute(f"UPDATE publications SET channel_msg_id = {ph} WHERE id = {ph}", (msg_id, publication_id))
+        conn.commit()
     finally:
+        cursor.close()
         conn.close()
 
 def get_publication(publication_id: int):
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
     conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"SELECT media_type, file_id, cover_file_id, caption, channel_msg_id FROM publications WHERE id = {ph}", (publication_id,))
-            return cursor.fetchone()
+        cursor.execute(f"SELECT media_type, file_id, cover_file_id, caption, channel_msg_id FROM publications WHERE id = {ph}", (publication_id,))
+        return cursor.fetchone()
     finally:
+        cursor.close()
         conn.close()
 
 def get_all_materials_by_type(media_type_filter: str):
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
     conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"""
-                SELECT id, caption FROM publications 
-                WHERE media_type LIKE {ph} 
-                ORDER BY id DESC
-            """, (f"%{media_type_filter}%",))
-            return cursor.fetchall()
+        cursor.execute(f"""
+            SELECT id, caption FROM publications 
+            WHERE media_type LIKE {ph} 
+            ORDER BY id DESC
+        """, (f"%{media_type_filter}%",))
+        return cursor.fetchall()
     finally:
+        cursor.close()
         conn.close()
 
 # -------------------------------------------------------------
@@ -332,10 +338,10 @@ def extract_video_frame(video_path: str) -> io.BytesIO:
     return None
 
 def render_pdf_first_page(file_path: str) -> io.BytesIO:
-    doc = fitz.open(file_path)
+    doc = pymupdf.open(file_path)
     if len(doc) > 0:
         page = doc[0]
-        mat = fitz.Matrix(2.0, 2.0)
+        mat = pymupdf.Matrix(2.0, 2.0)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         img_bytes = pix.tobytes("jpeg")
         doc.close()
@@ -750,14 +756,15 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         q_type = "voice" if update.message.voice else "text"
 
         conn = get_db_connection()
+        cursor = conn.cursor()
         try:
-            with conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(f"""
-                        INSERT INTO private_questions (user_id, username, full_name, question_type, question_content)
-                        VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
-                    """, (user.id, user.username or "بدون معرف", user.full_name or "مجهول", q_type, q_content))
+            cursor.execute(f"""
+                INSERT INTO private_questions (user_id, username, full_name, question_type, question_content)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+            """, (user.id, user.username or "بدون معرف", user.full_name or "مجهول", q_type, q_content))
+            conn.commit()
         finally:
+            cursor.close()
             conn.close()
 
         reply_member_markup = InlineKeyboardMarkup([
@@ -796,14 +803,15 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         c_type = "voice" if update.message.voice else "text"
 
         conn = get_db_connection()
+        cursor = conn.cursor()
         try:
-            with conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(f"""
-                        INSERT INTO comments (lecture_id, user_id, username, full_name, comment_type, comment_content)
-                        VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})
-                    """, (lecture_id, user.id, user.username or "بدون معرف", user.full_name or "مجهول", c_type, c_content))
+            cursor.execute(f"""
+                INSERT INTO comments (lecture_id, user_id, username, full_name, comment_type, comment_content)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})
+            """, (lecture_id, user.id, user.username or "بدون معرف", user.full_name or "مجهول", c_type, c_content))
+            conn.commit()
         finally:
+            cursor.close()
             conn.close()
 
         await context.bot.send_message(
@@ -823,11 +831,12 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
     elif action == "awaiting_search_query":
         query = update.message.text
         conn = get_db_connection()
+        cursor = conn.cursor()
         try:
-            with conn.cursor() as cursor:
-                cursor.execute(f"SELECT id, caption, media_type FROM publications WHERE caption LIKE {ph} ORDER BY id DESC", (f"%{query}%",))
-                results = cursor.fetchall()
+            cursor.execute(f"SELECT id, caption, media_type FROM publications WHERE caption LIKE {ph} ORDER BY id DESC", (f"%{query}%",))
+            results = cursor.fetchall()
         finally:
+            cursor.close()
             conn.close()
 
         if not results:
