@@ -55,13 +55,13 @@ class SimpleHealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is Active and Running!")
 
     def log_message(self, format, *args):
-        # منع تكرار سجلات فحص UptimeRobot للحفاظ على نظافة الـ Logs
+        # منع تسجيل طلبات الفحص الدورية للحفاظ على نظافة السجلات
         return
 
 def run_http_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), SimpleHealthHandler)
-    logger.info(f"تم بدء تشغيل سيرفر المراقبة بنجاح على المنفذ: {port}")
+    logger.info(f"تم تشغيل خادم المراقبة على المنفذ: {port}")
     server.serve_forever()
 
 # ----------------- إدارة قاعدة بيانات Supabase (PostgreSQL) -----------------
@@ -74,7 +74,6 @@ def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # جدول المواد المنشورة
     cur.execute("""
     CREATE TABLE IF NOT EXISTS publications (
         id SERIAL PRIMARY KEY,
@@ -86,7 +85,6 @@ def init_db():
     );
     """)
 
-    # جدول التحليلات وسجلات المتابعين
     cur.execute("""
     CREATE TABLE IF NOT EXISTS analytics (
         id SERIAL PRIMARY KEY,
@@ -101,7 +99,7 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
-    logger.info("تم التأكد من جاهزية جداول قاعدة البيانات بنجاح.")
+    logger.info("تم التحقق من جاهزية جداول قاعدة البيانات بنجاح.")
 
 def save_publication(media_type, file_id, cover_file_id, caption):
     conn = get_db_connection()
@@ -185,23 +183,48 @@ def create_audio_poster(title_text: str) -> bytes:
     image = Image.new("RGB", (width, height), color=(18, 30, 49))
     draw = ImageDraw.Draw(image)
 
-    # زخرفة الإطار الذهبي الملكي
-    draw.rectangle([40, 40, width - 40, height - 40], outline=(212, 175, 55), width=6)
-    draw.rectangle([60, 60, width - 60, height - 60], outline=(160, 130, 40), width=2)
+    # إطار إسلامي ملكي مزدوج
+    draw.rectangle([40, 40, width - 40, height - 40], outline=(212, 175, 55), width=8)
+    draw.rectangle([60, 60, width - 60, height - 60], outline=(160, 130, 40), width=3)
 
-    # معالجة النص العربي للرسم
+    # معالجة النص العربي للرسم ثنائي الاتجاه
     reshaped_text = arabic_reshaper.reshape(title_text)
     bidi_text = get_display(reshaped_text)
 
-    try:
-        font = ImageFont.truetype("arial.ttf", 65)
-    except Exception:
-        font = ImageFont.load_default()
+    # محاولة جلب الخطوط القياسية الكبيرة المدعومة في سيرفرات لينكس
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "arial.ttf"
+    ]
+    
+    font = None
+    footer_font = None
+    for path in font_paths:
+        if os.path.exists(path):
+            try:
+                font = ImageFont.truetype(path, 54)
+                footer_font = ImageFont.truetype(path, 38)
+                break
+            except Exception:
+                continue
 
-    draw.text((width // 2, height // 2), bidi_text, fill=(240, 240, 240), font=font, anchor="mm")
+    if font is None:
+        try:
+            font = ImageFont.load_default(size=48)
+            footer_font = ImageFont.load_default(size=34)
+        except Exception:
+            font = ImageFont.load_default()
+            footer_font = font
 
+    # كتابة العنوان الرئيسي في منتصف البوستر
+    draw.text((width // 2, height // 2), bidi_text, fill=(245, 245, 245), font=font, anchor="mm")
+
+    # توقيع المنصة في أسفل البوستر
     footer_text = get_display(arabic_reshaper.reshape("منصة القناة الرسمية"))
-    draw.text((width // 2, height - 120), footer_text, fill=(212, 175, 55), font=font, anchor="mm")
+    draw.text((width // 2, height - 120), footer_text, fill=(212, 175, 55), font=footer_font, anchor="mm")
 
     out_buffer = io.BytesIO()
     image.save(out_buffer, format="JPEG", quality=95)
@@ -341,7 +364,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     msg = update.message
 
-    # إذا كان المستخدم ينتظر إرسال سؤاله للشيخ
+    # استلام أسئلة الأعضاء الموجهة للشيخ
     if context.user_data.get("awaiting_question") and user.id != ADMIN_USER_ID:
         context.user_data["awaiting_question"] = False
         clean_name = html.escape(user.full_name or "بدون اسم")
@@ -367,7 +390,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيقوم الشيخ بالاطلاع عليه والإجابة عن استشارتك قريباً بإذن الله.")
         return
 
-    # إجابة المشرف على سؤال العضو
+    # إرسال إجابة الشيخ إلى السائل
     if user.id == ADMIN_USER_ID and context.user_data.get("answering_user_id"):
         target_id = context.user_data["answering_user_id"]
         try:
@@ -391,11 +414,11 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["answering_user_id"] = None
         return
 
-    # من هنا فصاعداً: معالجة المواد الواردة من المشرف حصراً للنشر
+    # فحص صلاحية الإدارة لباقي العمليات
     if user.id != ADMIN_USER_ID:
         return
 
-    # 1. إرسال ملف PDF
+    # 1. إرسال كتاب PDF
     if msg.document and msg.document.mime_type == "application/pdf":
         status_msg = await msg.reply_text("⏳ جاري استخراج غلاف الكتاب بدقة عالية...")
         try:
@@ -456,7 +479,16 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 3. إرسال مقطع صوتي (Audio / Voice)
     elif msg.audio or msg.voice:
-        title = msg.caption or (msg.audio.title if msg.audio else None) or "خطبة ومحاضرة صوتية"
+        # استخراج العنوان الذكي (كابشن، ثم عنوان المقطع، ثم اسم الملف مع تنظيف الامتداد)
+        title = msg.caption
+        if not title and msg.audio:
+            title = msg.audio.title
+            if not title and msg.audio.file_name:
+                title = os.path.splitext(msg.audio.file_name)[0].replace("_", " ")
+
+        if not title:
+            title = "خطبة ومحاضرة صوتية"
+
         status_msg = await msg.reply_text("⏳ جاري توليد وتصميم البوستر الملكي الصوتي...")
         try:
             poster_bytes = create_audio_poster(title)
@@ -483,7 +515,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # وضع الرد على السائل
     if query.data.startswith("reply_"):
         target_id = int(query.data.split("_")[1])
         context.user_data["answering_user_id"] = target_id
@@ -493,7 +524,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # تأكيد النشر في القناة
     if query.data == "publish_now":
         pending = context.user_data.get("pending_pub")
         if not pending:
@@ -502,7 +532,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         bot_me = await context.bot.get_me()
 
-        # حفظ المادة في Supabase واستخراج المعرف التسلسلي
         pub_id = save_publication(
             media_type=pending["media_type"],
             file_id=pending["file_id"],
@@ -510,7 +539,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=pending["caption"]
         )
 
-        # تحديد نص الزر التفاعلي الموجه للخاص
         if pending["media_type"] == "pdf":
             btn_text = "📥 قراءة وتحميل الكتاب"
             start_param = f"doc_{pub_id}"
@@ -526,7 +554,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
 
         try:
-            # نشر البوستر التلقائي في القناة مع الزر المباشر
             await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=pending["cover_bytes"],
@@ -541,14 +568,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ----------------- نقطة انطلاق التطبيق الرئيسية -----------------
 def main():
-    # 1. تشغيل خادم الويب المخصص لـ UptimeRobot في خلفية النظام
+    # تشغيل خادم المراقبة لـ UptimeRobot في الخلفية
     server_thread = threading.Thread(target=run_http_server, daemon=True)
     server_thread.start()
 
-    # 2. تهيئة جداول Supabase PostgreSQL
+    # تهيئة جداول Supabase PostgreSQL
     init_db()
 
-    # 3. بناء تطبيق البوت وتسجيل المعالجات
+    # تشغيل محرك تيليجرام
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_command))
