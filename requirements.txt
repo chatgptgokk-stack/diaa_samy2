@@ -1,9 +1,10 @@
 python-telegram-bot[job-queue]
-PyMuPDF
-Pillow
+pymupdf
+pillow
 opencv-python-headless
 arabic-reshaper
 python-bidi
 requests
+psycopg2-binary
 
 
