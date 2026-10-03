@@ -51,7 +51,7 @@ def run_web_server():
         logging.error(f"Web server error: {e}")
 
 # -------------------------------------------------------------
-# 2. الإعدادات وقاعدة البيانات الدائمة (PostgreSQL / SQLite)
+# 2. الإعدادات وقاعدة البيانات الدائمة
 # -------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
@@ -60,7 +60,7 @@ logging.basicConfig(
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@diaa_samy2")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "8389850706"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOCAL_DB_NAME = "channel_bot_data.db"
 
@@ -350,7 +350,7 @@ def build_custom_keyboard(bot_uname: str, lecture_id: int, primary_text: str, pr
     ])
 
 # -------------------------------------------------------------
-# 5. معالجة أوامر الروابط العميقة (Deep Linking)
+# 5. معالجة أوامر الروابط العميقة (Deep Linking) مع إرسال الإشعار دائماً
 # -------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -364,7 +364,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• **إرسال فيديو:** كادر سينمائي واعتماد الكابشن.\n"
                 "• **إرسال صوت:** تصميم إسلامي ملكي بالعنوان المطلوب.\n"
                 "• **إرسال صورة:** مسودة ومعاينة للبوسترات قبل النشر.\n"
-                "• **إرسال PDF:** استخراج فوري وحتمي للصفحة الأولى كغلاف."
+                "• **إرسال PDF:** استخراج فوري للغلاف مع زر التحميل المباشر."
             )
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
@@ -415,6 +415,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # إرسال إشعار المشاهدة
     elif payload.startswith("watch_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -423,17 +424,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(lecture_id, "watch_video", user)
-        if user.id != ADMIN_USER_ID:
+        try:
             await context.bot.send_message(
                 chat_id=ADMIN_USER_ID,
                 text=f"🔒 **إشعار مشاهدة فيديو (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
                 parse_mode="Markdown"
             )
+        except Exception as e:
+            logging.error(f"Notify error: {e}")
+
         if pub[0] == "doc_video":
             await update.message.reply_document(document=pub[1], caption=pub[3] or "", parse_mode="HTML")
         else:
             await update.message.reply_video(video=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
+    # إرسال إشعار الاستماع
     elif payload.startswith("listen_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -442,17 +447,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(lecture_id, "listen_audio", user)
-        if user.id != ADMIN_USER_ID:
+        try:
             await context.bot.send_message(
                 chat_id=ADMIN_USER_ID,
                 text=f"🔒 **إشعار استماع لخطبة (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
                 parse_mode="Markdown"
             )
+        except Exception as e:
+            logging.error(f"Notify error: {e}")
+
         if pub[0] == "voice":
             await update.message.reply_voice(voice=pub[1], caption=pub[3] or "")
         else:
             await update.message.reply_audio(audio=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
+    # إرسال إشعار فتح/تحميل الكتاب
     elif payload.startswith("doc_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -461,12 +470,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(lecture_id, "download_doc", user)
-        if user.id != ADMIN_USER_ID:
+        try:
             await context.bot.send_message(
                 chat_id=ADMIN_USER_ID,
                 text=f"🔒 **إشعار فتح / تحميل كتاب (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
                 parse_mode="Markdown"
             )
+        except Exception as e:
+            logging.error(f"Notify error: {e}")
+
         await update.message.reply_document(document=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
     elif payload.startswith("view_"):
@@ -477,12 +489,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(lecture_id, "view_photo", user)
-        if user.id != ADMIN_USER_ID:
+        try:
             await context.bot.send_message(
                 chat_id=ADMIN_USER_ID,
                 text=f"🔒 **إشعار استعراض صورة (سري)**\n• المنشور: `{lecture_id}`\n• المتابع: {user.full_name} (@{user.username or 'بدون'}) | ID: `{user.id}`",
                 parse_mode="Markdown"
             )
+        except Exception as e:
+            logging.error(f"Notify error: {e}")
+
         await update.message.reply_photo(photo=pub[1], caption=pub[3] or "", parse_mode="HTML")
 
     elif payload.startswith("comment_"):
@@ -519,14 +534,12 @@ async def post_menu_to_channel(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("✅ تم تحديث ونشر لوحة الأزرار في القناة بنجاح! يمكنك تثبيتها (Pin) في أعلى القناة الآن.")
 
 # -------------------------------------------------------------
-# 7. استخراج غلاف الصفحة الأولى من PDF بشكل قاطع
+# 7. استخراج غلاف الصفحة الأولى من PDF بشكل قطعي
 # -------------------------------------------------------------
 def render_pdf_first_page(file_path: str) -> io.BytesIO:
-    """استخراج الصفحة الأولى كصورة عالية الجودة بشكل قطعي"""
     doc = fitz.open(file_path)
     if len(doc) > 0:
         page = doc[0]
-        # مصفوفة تكبير 2x لدقة ووضوح فائق
         zoom = 2.0
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -546,7 +559,6 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
     msg = update.message
     bot_msg = await msg.reply_text("⏳ جاري سحب الملف واستخراج الصفحة الأولى كغلاف...")
 
-    # الصور والبوسترات
     if msg.photo:
         file_obj = msg.photo[-1]
         context.user_data["draft"] = {
@@ -570,7 +582,6 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
         )
         return
 
-    # مقاطع الفيديو
     is_video_doc = (
         msg.document and (
             "video" in (msg.document.mime_type or "").lower() or
@@ -617,7 +628,6 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             await msg.reply_text("🎬 تم استلام الفيديو! أرسل الكابشن أو اضغط اعتماد:", reply_markup=confirm_markup)
         return
 
-    # المقاطع الصوتية
     elif msg.audio or msg.voice:
         file_obj = msg.audio or msg.voice
         m_type = "audio" if msg.audio else "voice"
@@ -637,7 +647,6 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
         )
         return
 
-    # ملفات PDF والمستندات (استخراج حتمي للصفحة الأولى كغلاف)
     elif msg.document:
         doc = msg.document
         doc_name = doc.file_name or "كتاب ومستند علمي"
@@ -674,14 +683,14 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             cover_stream.seek(0)
             await msg.reply_photo(
                 photo=cover_stream,
-                caption=f"📖 **تم استخراج الصفحة الأولى من الملف كغلاف بنجاح قاطع!**\n\n"
+                caption=f"📖 **تم استخراج الصفحة الأولى من الملف كغلاف بنجاح!**\n\n"
                         f"• **الكابشن المقترح:**\n{context.user_data['draft']['caption']}\n\n"
                         f"✏️ أرسل كابشن جديد للتعديل، أو اضغط **اعتماد ونشر في القناة الآن**:",
                 reply_markup=confirm_markup
             )
         else:
             await msg.reply_text(
-                f"📚 **تم حفظ ملف الـ PDF!**\n\n"
+                f"📚 **تم استلام الملف بنجاح!**\n\n"
                 f"• الكابشن المقترح: {clean_title}\n\n"
                 f"أرسل الكابشن المطلوب أو اضغط اعتماد:",
                 reply_markup=confirm_markup
