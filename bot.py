@@ -12,7 +12,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
 
 import arabic_reshaper
-from bidi.algorithm import get_display
 
 from telegram import (
     Update,
@@ -129,12 +128,11 @@ def get_publication(publication_id: int):
         return cursor.fetchone()
 
 # -------------------------------------------------------------
-# 3. إدارة الخط العربي والتصميم الزخرفي
+# 3. إدارة الخط والتصميم الزخرفي الإسلامي
 # -------------------------------------------------------------
 FONT_FILE = "Amiri-Bold.ttf"
 
 def ensure_font_downloaded():
-    """تحميل خط أميري العربي تلقائياً لبيئة السيرفر عند الإقلاع وتخزينه محلياً"""
     if not os.path.exists(FONT_FILE):
         try:
             url = "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Bold.ttf"
@@ -155,13 +153,13 @@ def get_font(size=64):
     return ImageFont.load_default()
 
 def create_islamic_audio_card(title_text: str) -> io.BytesIO:
-    """تصميم بطاقة إسلامية أنيقة مع رسم النصوص العربية بالترتيب الصحيح 100%"""
+    """تصميم بطاقة إسلامية أنيقة مع ضبط رسم الحروف العربية من اليمين لليسار"""
     ensure_font_downloaded()
 
     width, height = 1080, 1080
-    bg_color = (15, 23, 42)       # كحلي ملكي عميق
+    bg_color = (15, 23, 42)       # كحلي ملكي
     gold_color = (212, 175, 55)   # ذهبي إسلامي
-    gold_light = (245, 222, 130)  # لمعان ذهبي فاتح
+    gold_light = (245, 222, 130)  # لمعان ذهبي
 
     img = Image.new("RGB", (width, height), color=bg_color)
     draw = ImageDraw.Draw(img)
@@ -184,13 +182,13 @@ def create_islamic_audio_card(title_text: str) -> io.BytesIO:
     draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=320, end=40, fill=gold_color, width=3)
     draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=140, end=220, fill=gold_color, width=3)
 
-    # 4. تشكيل وتهيئة النص العربي بالترتيب الطبيعي دون عكس يدوي
+    # 4. تشكيل ووصل الحروف العربية فقط دون تكرار العكس
     display_title = title_text if title_text else "تسجيل صوتي مبارك"
     try:
-        reshaped = arabic_reshaper.reshape(display_title)
-        bidi_text = get_display(reshaped)
+        # تشكيل الحروف لتكون متصلة
+        reshaped_text = arabic_reshaper.reshape(display_title)
     except Exception:
-        bidi_text = display_title
+        reshaped_text = display_title
 
     font = get_font(size=62)
 
@@ -198,8 +196,8 @@ def create_islamic_audio_card(title_text: str) -> io.BytesIO:
     draw.line([(180, 480), (width - 180, 480)], fill=gold_color, width=3)
     draw.ellipse([(center_x - 7, 473), (center_x + 7, 487)], fill=gold_light)
 
-    # كتابة العنوان العربي بوضوح في المنتصف
-    draw.text((center_x, 560), bidi_text, fill=gold_light, font=font, anchor="mm")
+    # كتابة النص بالترتيب الطبيعي العربي
+    draw.text((center_x, 560), reshaped_text, fill=gold_light, font=font, anchor="mm")
 
     draw.line([(180, 640), (width - 180, 640)], fill=gold_color, width=3)
     draw.ellipse([(center_x - 7, 633), (center_x + 7, 647)], fill=gold_light)
