@@ -94,7 +94,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # جدول الأسئلة السرية
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS private_questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -242,14 +241,9 @@ def extract_video_frame(video_path: str) -> io.BytesIO:
     return None
 
 # -------------------------------------------------------------
-# 4. بناء لوحة التحكم المخصصة بالقناة (Channel Index Menu)
+# 4. لوحات الأزرار
 # -------------------------------------------------------------
 def build_channel_control_panel(bot_uname: str):
-    """
-    الصف الأول: الخطب - الفيديوهات
-    الصف الثاني: الكتب - البحث
-    الصف الثالث: إسأل الشيخ (عريض بحجم الزرين)
-    """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎙 الخطب والمحاضرات", url=f"https://t.me/{bot_uname}?start=cat_audio"),
@@ -307,7 +301,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     payload = args[0]
 
-    # أ) خدمة "إسأل الشيخ" الخاصة السرية
+    # أ) خدمة "إسأل الشيخ"
     if payload == "ask_sheikh":
         context.user_data["action"] = "awaiting_private_question"
         await update.message.reply_text(
@@ -318,13 +312,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ب) تصفح الأقسام (فيديوهات / خطب / كتب)
+    # ب) تصفح الأقسام
     elif payload.startswith("cat_"):
         c_type = payload.replace("cat_", "")
         type_names = {"audio": "الخطب والمحاضرات", "video": "المقاطع المرئية", "pdf": "الكتب والمؤلفات"}
         materials = get_materials_by_type(c_type, limit=8)
         
-        bot_info = await context.bot.get_me()
         if not materials:
             await update.message.reply_text(f"لا توجد مواد منشورة حالياً في قسم {type_names.get(c_type, '')}.")
             return
@@ -348,7 +341,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔍 **البحث في القناة:**\nاكتب كلمة البحث للبحث في عناوين الخطب، الفيديوهات، والكتب:")
         return
 
-    # د) فتح الوسائط المنشورة مسبقاً
+    # د) تسليم المواد
     elif payload.startswith("watch_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -429,7 +422,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # -------------------------------------------------------------
-# 6. أمر إرسال لوحة التحكم والتنقل إلى القناة (`/menu`)
+# 6. أمر إرسال الفهرس العام للقناة (`/menu`)
 # -------------------------------------------------------------
 async def post_menu_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
@@ -576,13 +569,42 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             await msg.reply_text("📚 أرسل نص الكابشن لبطاقة الكتاب، أو أرسل `اعتماد`.")
 
 # -------------------------------------------------------------
-# 8. التفاعل والأسئلة السرية والبحث
+# 8. التفاعل والأسئلة السرية والرد المباشر
 # -------------------------------------------------------------
 async def handle_user_interactions_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     action = context.user_data.get("action")
 
-    # أ) استقبال سؤال سري في "إسأل الشيخ"
+    # أ) المشرف يرسل الإجابة بعد الضغط على زر "الإجابة على سؤال العضو"
+    if user.id == ADMIN_USER_ID and action == "answering_member_question":
+        target_uid = context.user_data.get("target_user_id")
+        target_uname = context.user_data.get("target_user_name", "المتابع")
+
+        try:
+            if update.message.text:
+                await context.bot.send_message(
+                    chat_id=target_uid,
+                    text=f"🔒 **إجابة واستشارة خاصة من الشيخ:**\n\n{update.message.text}",
+                    parse_mode="Markdown"
+                )
+            elif update.message.voice:
+                await context.bot.send_voice(
+                    chat_id=target_uid,
+                    voice=update.message.voice.file_id,
+                    caption="🔒 تسجيل صوتي خاص من الشيخ رداً على استشارتك."
+                )
+
+            await update.message.reply_text(
+                f"✅ **تم إرسال الإجابة إلى ({target_uname}) في سرية تامة ومطلقة.**",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ تعذر تسليم الرد للمستخدم (ربما قام بحظر البوت): {e}")
+
+        context.user_data.clear()
+        return
+
+    # ب) استقبال سؤال سري من العضو عبر (إسأل الشيخ)
     if action == "awaiting_private_question":
         q_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
         q_type = "voice" if update.message.voice else "text"
@@ -595,7 +617,12 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
             """, (user.id, user.username or "بدون معرف", user.full_name or "مجهول", q_type, q_content))
             conn.commit()
 
-        # إشعار المدير بالسؤال السري فوراً
+        # زر الإجابة المباشر للمشرف
+        reply_member_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✍️ الإجابة على سؤال العضو", callback_data=f"answer_user_{user.id}")]
+        ])
+
+        # إشعار المشرف بالسؤال السري
         await context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=f"❓ **سؤال واستشارة خاصة واردة للشيخ (سري جداً)**\n"
@@ -605,15 +632,24 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
             parse_mode="Markdown"
         )
         if q_type == "text":
-            await context.bot.send_message(chat_id=ADMIN_USER_ID, text=f"📝 **نص السؤال:**\n{q_content}")
+            await context.bot.send_message(
+                chat_id=ADMIN_USER_ID, 
+                text=f"📝 **نص السؤال:**\n{q_content}",
+                reply_markup=reply_member_markup
+            )
         else:
-            await context.bot.send_voice(chat_id=ADMIN_USER_ID, voice=q_content)
+            await context.bot.send_voice(
+                chat_id=ADMIN_USER_ID, 
+                voice=q_content,
+                caption="🎙 تسجيل صوتي من السائل.",
+                reply_markup=reply_member_markup
+            )
 
         context.user_data.clear()
         await update.message.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيقوم الشيخ بالاطلاع عليه والإجابة عن استشارتك قريباً بإذن الله.")
         return
 
-    # ب) استقبال تعليق على منشور
+    # ج) استقبال تعليق على منشور
     elif action == "comment":
         lecture_id = context.user_data.get("lecture_id")
         c_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
@@ -641,7 +677,7 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         await update.message.reply_text("✅ تم استلام تعليقك بنجاح.")
         return
 
-    # ج) البحث
+    # د) البحث
     elif action == "awaiting_search_query":
         query = update.message.text
         with sqlite3.connect(DB_NAME) as conn:
@@ -666,7 +702,7 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         context.user_data.clear()
         return
 
-    # د) إدخال نصوص المشرف لتجهيز المنشور
+    # هـ) مسودات المشرف
     if user.id == ADMIN_USER_ID and "draft" in context.user_data:
         draft = context.user_data["draft"]
         draft_action = context.user_data.get("action")
@@ -722,7 +758,7 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
                 )
 
 # -------------------------------------------------------------
-# 9. أزرار القوائم الداخلية والموافقة على النشر
+# 9. أزرار القوائم والرد على الأسئلة
 # -------------------------------------------------------------
 async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -730,12 +766,37 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
     data = query.data
     user = update.effective_user
 
+    # المشرف يضغط على زر "الإجابة على سؤال العضو"
+    if data.startswith("answer_user_"):
+        target_uid = int(data.replace("answer_user_", ""))
+        context.user_data["action"] = "answering_member_question"
+        context.user_data["target_user_id"] = target_uid
+        context.user_data["target_user_name"] = f"المعرف {target_uid}"
+
+        cancel_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ إلغاء الإجابة", callback_data="cancel_answer")]
+        ])
+
+        await query.message.reply_text(
+            f"✍️ **وضع الرد السري على السائل (ID: `{target_uid}`):**\n\n"
+            f"تفضل الآن بإرسال إجابتك **نصياً أو سجّل مقطعاً صوتياً (🎙)**.\n"
+            f"سيقوم البوت بنقلها إليه فوراً في سرية تامة.",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        return
+
+    if data == "cancel_answer":
+        context.user_data.clear()
+        await query.edit_message_text("❌ تم إلغاء وضع الرد.")
+        return
+
     if data == "cancel_publish":
         context.user_data.clear()
         await query.edit_message_caption("❌ تم إلغاء المسودة.")
         return
 
-    # تسليم المواد من القوائم والبحث داخل الخاص
+    # تسليم المواد
     if data.startswith("get_"):
         parts = data.split("_")
         action_pfx = parts[1]
