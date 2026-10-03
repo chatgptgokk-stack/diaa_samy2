@@ -4,13 +4,13 @@ import fitz  # PyMuPDF
 import cv2   # OpenCV
 import sqlite3
 import logging
+import requests
 import urllib.parse
 from datetime import datetime
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
 
-# مكتبات التشكيل العربي
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -29,7 +29,7 @@ from telegram.ext import (
 )
 
 # -------------------------------------------------------------
-# 1. خادم ويب مدمج للحفاظ على استمرارية الخدمة مجاناً
+# 1. خادم ويب مصغر لضمان استمرارية التشغيل على Render Free
 # -------------------------------------------------------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -132,10 +132,30 @@ def get_publication(publication_id: int):
         return cursor.fetchone()
 
 # -------------------------------------------------------------
-# 4. محرك التصميم الزخرفي ومعالجة الكوادر بأمان
+# 4. محرك التصميم الزخرفي ومعالجة الخطوط
 # -------------------------------------------------------------
+def get_arabic_font(size=56):
+    """تحميل خط عربي أصيل لضمان ظهور الكلمات بوضوح تام على السيرفر"""
+    font_filename = "Cairo-Bold.ttf"
+    if not os.path.exists(font_filename):
+        try:
+            font_url = "https://github.com/googlefonts/cairo/raw/main/fonts/ttf/Cairo-Bold.ttf"
+            resp = requests.get(font_url, timeout=12)
+            if resp.status_code == 200:
+                with open(font_filename, "wb") as f:
+                    f.write(resp.content)
+        except Exception as e:
+            logging.error(f"Error downloading font: {e}")
+
+    if os.path.exists(font_filename):
+        try:
+            return ImageFont.truetype(font_filename, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
 def create_islamic_audio_card(title_text: str) -> io.BytesIO:
-    """توليد بطاقة إسلامية ملكية بزخارف ثرية دون طلبات شبكة خارجية."""
+    """توليد بطاقة إسلامية ملكية بزخارف عربية واضحة ومشكّلة"""
     width, height = 1080, 1080
     bg_color = (15, 23, 42)       # كحلي لؤلؤي ملكي غامق
     gold_color = (212, 175, 55)   # ذهبي ملكي
@@ -144,39 +164,39 @@ def create_islamic_audio_card(title_text: str) -> io.BytesIO:
     img = Image.new("RGB", (width, height), color=bg_color)
     draw = ImageDraw.Draw(img)
 
-    # إطارات هندسية متعددة
+    # 1. إطارات هندسية مزدوجة
     draw.rectangle([(35, 35), (width - 35, height - 35)], outline=gold_color, width=4)
     draw.rectangle([(55, 55), (width - 55, height - 55)], outline=gold_light, width=2)
     draw.rectangle([(75, 75), (width - 75, height - 75)], outline=gold_color, width=1)
 
-    # زخارف الأركان
+    # 2. زخارف الأركان
     for cx, cy in [(75, 75), (width - 75, 75), (75, height - 75), (width - 75, height - 75)]:
-        draw.line([(cx - 15, cy), (cx + 35, cy)], fill=gold_light, width=2)
-        draw.line([(cx, cy - 15), (cx, cy + 35)], fill=gold_light, width=2)
+        draw.line([(cx - 20, cy), (cx + 35, cy)], fill=gold_light, width=2)
+        draw.line([(cx, cy - 20), (cx + 35, cy)], fill=gold_light, width=2)
         draw.rectangle([(cx - 10, cy - 10), (cx + 10, cy + 10)], outline=gold_color, width=2)
 
-    # أيقونة الهلال والرمز الصوتي
+    # 3. أيقونة الهلال والرمز الصوتي
     center_x = width // 2
     draw.arc([(center_x - 50, 160), (center_x + 50, 260)], start=25, end=275, fill=gold_light, width=5)
     draw.ellipse([(center_x - 12, 198), (center_x + 12, 222)], fill=gold_color)
     draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=320, end=40, fill=gold_color, width=3)
     draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=140, end=220, fill=gold_color, width=3)
 
-    # تشكيل الحروف العربية
+    # 4. تشكيل وتهيئة النص العربي
     display_title = title_text if title_text else "تسجيل صوتي مبارك"
     try:
-        reshaped_text = arabic_reshaper.reshape(display_title)
-        bidi_text = get_display(reshaped_text)
+        reshaped = arabic_reshaper.reshape(display_title)
+        bidi_text = get_display(reshaped)
     except Exception:
         bidi_text = display_title
 
-    # خط آمن مدمج
-    font = ImageFont.load_default()
+    font = get_arabic_font(size=56)
 
-    # خطوط فاصلة بنقاط ذهبية
+    # 5. خطوط فاصلة بنقاط ذهبية
     draw.line([(200, 480), (width - 200, 480)], fill=gold_color, width=3)
     draw.ellipse([(center_x - 6, 474), (center_x + 6, 486)], fill=gold_light)
 
+    # كتابة العنوان العربي بوضوح في المنتصف
     draw.text((center_x, 560), bidi_text, fill=gold_light, font=font, anchor="mm")
 
     draw.line([(200, 640), (width - 200, 640)], fill=gold_color, width=3)
@@ -188,7 +208,7 @@ def create_islamic_audio_card(title_text: str) -> io.BytesIO:
     return output
 
 def extract_video_frame(video_path: str) -> io.BytesIO:
-    """استخراج كادر سينمائي من منتصف الفيديو."""
+    """استخراج كادر سينمائي من منتصف الفيديو"""
     try:
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -240,10 +260,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         if user.id == ADMIN_USER_ID:
             msg = (
-                "👋 **مرحباً بك يا مدير القناة في لوحة التحكم:**\n\n"
-                "• أرسل مقطع فيديو لاستخراج كادره الفوري وطلب الكابشن.\n"
-                "• أرسل مقطع صوتي لإنشاء التصميم الزخرفي الإسلامي وطلب الكابشن.\n"
-                "• لن يُرفع الملف بالقناة إطلاقاً بل يُسلّم للمتابع في الخاص."
+                "👋 **مرحباً بك يا مدير القناة في لوحة التحكم التحريرية:**\n\n"
+                "• **إرسال فيديو:** يستخرج البوت كادراً سينمائياً ويطلب منك العنوان قبل النشر.\n"
+                "• **إرسال صوت:** يصنع البوت لوحة إسلامية بالعنوان المختار ويطلب منك الكابشن قبل النشر.\n"
+                "• لن يُرفع الملف في القناة إطلاقاً بل يستلمه المتابع بالخاص."
             )
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
@@ -313,14 +333,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # -------------------------------------------------------------
-# 7. التحرير واستقبال الوسائط
+# 7. التجهيز والمعاينة
 # -------------------------------------------------------------
 async def handle_admin_media_preparation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         return
 
     msg = update.message
-    bot_msg = await msg.reply_text("⏳ جاري المعالجة والتجهيز...")
+    bot_msg = await msg.reply_text("⏳ جاري المعالجة وتجهيز المعاينة...")
 
     is_video_doc = (
         msg.document and (
@@ -354,7 +374,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             await msg.reply_photo(
                 photo=frame_bytes,
                 caption="🎬 **تم استخراج هذا الكادر الأنيق كثيمبل للمقطع!**\n\n"
-                        "✏️ **أرسل الآن العنوان والكابشن** المطلوب إدراجه بالقناة[span_0](start_span)[span_0](end_span):\n"
+                        "✏️ **أرسل الآن العنوان والكابشن** المطلوب للمنشور:\n"
                         "(أو أرسل كلمة `اعتماد` لاستخدام الوصف الحالي)."
             )
             return
@@ -374,7 +394,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
         await bot_msg.delete()
         await msg.reply_text(
             "🎧 **تم استلام المقطع الصوتي!**\n\n"
-            "✍️ أرسل الآن **العنوان** الذي ترغب في دمجه بالتصميم الزخرفي الإسلامي وبالكابشن:"
+            "✍️ أرسل الآن **العنوان** الذي ترغب في وضعه داخل التصميم الزخرفي الإسلامي وفي الكابشن:"
         )
         return
 
@@ -409,7 +429,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             await msg.reply_text("📚 أرسل نص الكابشن لبطاقة الكتاب، أو أرسل `اعتماد`.")
 
 # -------------------------------------------------------------
-# 8. إدخال النصوص وتأكيد النشر
+# 8. إدخال النصوص والتعليقات
 # -------------------------------------------------------------
 async def handle_admin_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -459,9 +479,9 @@ async def handle_admin_text_inputs(update: Update, context: ContextTypes.DEFAULT
             islamic_card.seek(0)
             await update.message.reply_photo(
                 photo=islamic_card,
-                caption=f"🕌 **تم تصميم البطاقة الإسلامية بالعنوان!**\n\n"
-                        f"• **الكابشن المعتمد:**\n{title}\n\n"
-                        f"اضغط بالأسفل للنشر في القناة[span_1](start_span)[span_1](end_span):",
+                caption=f"🕌 **تم دمج العنوان داخل التصميم الإسلامي بنجاح!**\n\n"
+                        f"• **الكابشن المقترح:**\n{title}\n\n"
+                        f"اضغط على الزر أدناه لإطلاق المنشور في القناة:",
                 reply_markup=confirm_markup,
                 parse_mode="Markdown"
             )
@@ -553,7 +573,7 @@ async def handle_publish_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_caption(f"✅ **تم النشر في القناة بنجاح (المعرف: `{pub_id}`).**")
 
 # -------------------------------------------------------------
-# 10. تشغيل التطبيق بحماية كاملة
+# 10. تشغيل التطبيق
 # -------------------------------------------------------------
 def main():
     if not BOT_TOKEN:
