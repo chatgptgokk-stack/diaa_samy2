@@ -155,7 +155,7 @@ def get_font(size=64):
     return ImageFont.load_default()
 
 def create_islamic_audio_card(title_text: str) -> io.BytesIO:
-    """تصميم بطاقة إسلامية أنيقة مع رسم النصوص العربية باتجاه صحيح وسليم"""
+    """تصميم بطاقة إسلامية أنيقة مع رسم النصوص العربية بالترتيب الصحيح 100%"""
     ensure_font_downloaded()
 
     width, height = 1080, 1080
@@ -184,12 +184,11 @@ def create_islamic_audio_card(title_text: str) -> io.BytesIO:
     draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=320, end=40, fill=gold_color, width=3)
     draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=140, end=220, fill=gold_color, width=3)
 
-    # 4. تشكيل وتهيئة النص العربي مع مراعاة اتجاه الكلمات بدقة
+    # 4. تشكيل وتهيئة النص العربي بالترتيب الطبيعي دون عكس يدوي
     display_title = title_text if title_text else "تسجيل صوتي مبارك"
     try:
         reshaped = arabic_reshaper.reshape(display_title)
-        words = reshaped.split()
-        bidi_text = " ".join(words[::-1])
+        bidi_text = get_display(reshaped)
     except Exception:
         bidi_text = display_title
 
