@@ -1,5 +1,8 @@
 import os
+import asyncio
 import logging
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -7,6 +10,19 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# 1. خادم ويب وهمي بسيط لتجاوز فحص Render المجاني
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and running!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+# 2. إعدادات التيليجرام
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
     level=logging.INFO
@@ -20,7 +36,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         return
     welcome_text = (
-        "مرحباً بك في لوحة تحكم القناة السحابية:\n\n"
+        "مرحباً بك في لوحة تحكم القناة:\n\n"
         "1. `/post [النص]` - لنشر رسالة فورية مع زر رابط القناة.\n"
         "2. `/schedule [ثواني] [النص]` - لجدولة رسالة بعد ثوانٍ."
     )
@@ -77,11 +93,18 @@ async def schedule_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         raise ValueError("خطأ: لم يتم ضبط BOT_TOKEN!")
+    
+    # تشغيل خادم الويب في خلفية مستقلة (Thread)
+    web_thread = Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+
+    # تشغيل البوت
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("post", post_to_channel))
     app.add_handler(CommandHandler("schedule", schedule_post))
-    print("البوت السحابي يعمل الآن بنجاح...")
+    
+    print("البوت يعمل الآن بنجاح على الخطة المجانية...")
     app.run_polling()
 
 if __name__ == "__main__":
