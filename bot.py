@@ -364,7 +364,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• **إرسال فيديو:** كادر سينمائي واعتماد الكابشن.\n"
                 "• **إرسال صوت:** تصميم إسلامي ملكي بالعنوان المطلوب.\n"
                 "• **إرسال صورة:** مسودة ومعاينة للبوسترات قبل النشر.\n"
-                "• **إرسال PDF:** استخراج الغلاف وزر التحميل المباشر."
+                "• **إرسال PDF:** استخراج فوري وحتمي للصفحة الأولى كغلاف."
             )
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
@@ -373,7 +373,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     payload = args[0]
 
-    # أ) خدمة "إسأل الشيخ"
     if payload == "ask_sheikh":
         context.user_data["action"] = "awaiting_private_question"
         await update.message.reply_text(
@@ -384,7 +383,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ب) تصفح جميع المواد
     elif payload.startswith("cat_"):
         c_type = payload.replace("cat_", "")
         type_names = {"audio": "الخطب والمحاضرات الصوتية", "video": "المقاطع المرئية (الفيديو)", "pdf": "الكتب والمستندات (PDF)"}
@@ -409,7 +407,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ج) البحث
     elif payload == "act_search":
         context.user_data["action"] = "awaiting_search_query"
         await update.message.reply_text(
@@ -418,7 +415,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # د) تسليم المواد المباشرة
     elif payload.startswith("watch_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -523,37 +519,36 @@ async def post_menu_to_channel(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("✅ تم تحديث ونشر لوحة الأزرار في القناة بنجاح! يمكنك تثبيتها (Pin) في أعلى القناة الآن.")
 
 # -------------------------------------------------------------
-# 7. تجهيز الوسائط والمسودات التحريرية (مع معالجة PDF متطورة)
+# 7. استخراج غلاف الصفحة الأولى من PDF بشكل قاطع
+# -------------------------------------------------------------
+def render_pdf_first_page(file_path: str) -> io.BytesIO:
+    """استخراج الصفحة الأولى كصورة عالية الجودة بشكل قطعي"""
+    doc = fitz.open(file_path)
+    if len(doc) > 0:
+        page = doc[0]
+        # مصفوفة تكبير 2x لدقة ووضوح فائق
+        zoom = 2.0
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img_bytes = pix.tobytes("jpeg")
+        doc.close()
+        return io.BytesIO(img_bytes)
+    doc.close()
+    return None
+
+# -------------------------------------------------------------
+# 8. تجهيز الوسائط والمسودات التحريرية
 # -------------------------------------------------------------
 async def handle_admin_media_preparation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         return
 
     msg = update.message
-    bot_msg = await msg.reply_text("⏳ جاري المعالجة وتجهيز المعاينة...")
+    bot_msg = await msg.reply_text("⏳ جاري سحب الملف واستخراج الصفحة الأولى كغلاف...")
 
     # الصور والبوسترات
     if msg.photo:
         file_obj = msg.photo[-1]
-        # إذا كان المشرف يرسل غلافاً يدوياً لملف PDF ينتظر الغلاف:
-        if context.user_data.get("action") == "awaiting_custom_cover":
-            draft = context.user_data.get("draft", {})
-            draft["cover_file_id"] = file_obj.file_id
-            context.user_data["action"] = "awaiting_caption"
-            await bot_msg.delete()
-            confirm_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚀 اعتماد ونشر في القناة الآن", callback_data="confirm_publish")],
-                [InlineKeyboardButton("❌ إلغاء", callback_data="cancel_publish")]
-            ])
-            await msg.reply_photo(
-                photo=file_obj.file_id,
-                caption=f"📚 **تم ربط صورة الغلاف بالكتاب بنجاح!**\n\n"
-                        f"• **الكابشن الحالي:**\n{draft.get('caption', '')}\n\n"
-                        f"✏️ أرسل الآن الكابشن المطلوب أو أرسل `اعتماد` (أو اضغط زر الاعتماد أدناه):",
-                reply_markup=confirm_markup
-            )
-            return
-
         context.user_data["draft"] = {
             "media_type": "photo",
             "file_id": file_obj.file_id,
@@ -570,7 +565,7 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             photo=file_obj.file_id,
             caption="🖼 **تم استلام الصورة وتجهيز المسودة!**\n\n"
                     "✏️ **أرسل الآن نص الكابشن** المطلوب إدراجه بالقناة،\n"
-                    "أو أرسل كلمة `اعتماد` (أو اضغط زر الاعتماد أدناه) للنشر بالوصف الحالي:",
+                    "أو اضغط زر الاعتماد أدناه للنشر بالوصف الحالي:",
             reply_markup=confirm_markup
         )
         return
@@ -587,17 +582,15 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
         m_type = "video" if msg.video else "doc_video"
 
         frame_bytes = None
-        # محاولة استخراج كادر فقط إذا كان الحجم أقل من 19MB
-        if getattr(file_obj, "file_size", 0) < 19 * 1024 * 1024:
-            try:
-                temp_vpath = f"temp_{file_obj.file_unique_id}.mp4"
-                tg_file = await context.bot.get_file(file_obj.file_id)
-                await tg_file.download_to_drive(temp_vpath)
-                frame_bytes = extract_video_frame(temp_vpath)
-                if os.path.exists(temp_vpath):
-                    os.remove(temp_vpath)
-            except Exception as e:
-                logging.error(f"Video thumb error: {e}")
+        try:
+            temp_vpath = f"temp_{file_obj.file_unique_id}.mp4"
+            tg_file = await context.bot.get_file(file_obj.file_id)
+            await tg_file.download_to_drive(temp_vpath)
+            frame_bytes = extract_video_frame(temp_vpath)
+            if os.path.exists(temp_vpath):
+                os.remove(temp_vpath)
+        except Exception as e:
+            logging.error(f"Video thumb error: {e}")
 
         context.user_data["draft"] = {
             "media_type": m_type,
@@ -617,17 +610,11 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             frame_bytes.seek(0)
             await msg.reply_photo(
                 photo=frame_bytes,
-                caption="🎬 **تم استخراج هذا الكادر الأنيق كثيمبل للمقطع!**\n\n"
-                        "✏️️ **أرسل الآن العنوان والكابشن** المطلوب للمنشور:\n"
-                        "(أو أرسل كلمة `اعتماد` لاستخدام الوصف الحالي).",
+                caption="🎬 **تم استخراج كادر الفيديو بنجاح!**\n\n✏️ أرسل الكابشن الآن أو اضغط اعتماد:",
                 reply_markup=confirm_markup
             )
         else:
-            await msg.reply_text(
-                "🎬 **تم استلام الفيديو بنجاح!**\n\n"
-                "✏️ أرسل الكابشن/العنوان للمنشور، أو أرسل `اعتماد` لنشره فوراً:",
-                reply_markup=confirm_markup
-            )
+            await msg.reply_text("🎬 تم استلام الفيديو! أرسل الكابشن أو اضغط اعتماد:", reply_markup=confirm_markup)
         return
 
     # المقاطع الصوتية
@@ -650,61 +637,58 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
         )
         return
 
-    # ملفات PDF والمستندات (معالجة محمية ضد الحجم والانهيار)
+    # ملفات PDF والمستندات (استخراج حتمي للصفحة الأولى كغلاف)
     elif msg.document:
         doc = msg.document
         doc_name = doc.file_name or "كتاب ومستند علمي"
-        file_size_mb = (doc.file_size or 0) / (1024 * 1024)
-
-        cover_img_bytes = None
-        # محاولة استخراج الغلاف التلقائي فقط للملفات الصغيرة (أقل من 15MB) لتجنب أخطاء تليجرام
-        if file_size_mb < 15 and (doc.mime_type == "application/pdf" or doc_name.lower().endswith(".pdf")):
-            try:
-                tg_file = await context.bot.get_file(doc.file_id)
-                pdf_bytes = await tg_file.download_as_bytearray()
-                pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                if len(pdf_doc) > 0:
-                    cover_img_bytes = pdf_doc.load_page(0).get_pixmap().tobytes("jpeg")
-                pdf_doc.close()
-                del pdf_bytes
-            except Exception as e:
-                logging.warning(f"تعذر استخراج غلاف الـ PDF تلقائياً: {e}")
-
         clean_title = doc_name.replace(".pdf", "").replace("_", " ")
+
+        temp_pdf_path = f"temp_{doc.file_unique_id}.pdf"
+        cover_stream = None
+
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            await tg_file.download_to_drive(temp_pdf_path)
+            cover_stream = render_pdf_first_page(temp_pdf_path)
+        except Exception as e:
+            logging.error(f"فشل استخراج صفحة الـ PDF: {e}")
+        finally:
+            if os.path.exists(temp_pdf_path):
+                os.remove(temp_pdf_path)
+
         context.user_data["draft"] = {
             "media_type": "pdf",
             "file_id": doc.file_id,
-            "cover_bytes": cover_img_bytes,
-            "cover_file_id": None,
-            "caption": msg.caption or f"📚 كتاب: {clean_title}"
+            "cover_bytes": cover_stream.getvalue() if cover_stream else None,
+            "caption": msg.caption or f"📚 {clean_title}"
         }
         context.user_data["action"] = "awaiting_caption"
         await bot_msg.delete()
 
         confirm_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 اعتماد ونشر في القناة الآن", callback_data="confirm_publish")],
-            [InlineKeyboardButton("🖼 إرسال صورة غلاف مخصصة", callback_data="prompt_custom_cover")],
             [InlineKeyboardButton("❌ إلغاء", callback_data="cancel_publish")]
         ])
 
-        if cover_img_bytes:
+        if cover_stream:
+            cover_stream.seek(0)
             await msg.reply_photo(
-                photo=io.BytesIO(cover_img_bytes),
-                caption=f"📚 **تم استلام ملف الـ PDF واستخراج غلافه!**\n\n"
-                        f"• **العنوان المقترح:** {clean_title}\n\n"
-                        f"✏️ أرسل الكابشن الجديد، أو اضغط **اعتماد ونشر** لنشره مباشرة:",
+                photo=cover_stream,
+                caption=f"📖 **تم استخراج الصفحة الأولى من الملف كغلاف بنجاح قاطع!**\n\n"
+                        f"• **الكابشن المقترح:**\n{context.user_data['draft']['caption']}\n\n"
+                        f"✏️ أرسل كابشن جديد للتعديل، أو اضغط **اعتماد ونشر في القناة الآن**:",
                 reply_markup=confirm_markup
             )
         else:
             await msg.reply_text(
-                f"📚 **تم استلام ملف الـ PDF بنجاح!** (الحجم: {file_size_mb:.1f} MB)\n\n"
-                f"• **العنوان المقترح:** {clean_title}\n\n"
-                f"💡 يمكنك الضغط على **(إرسال صورة غلاف مخصصة)** إن أردت إرفاق صورة غلاف للبطاقة، أو أرسل الكابشن ثم اضغط **اعتماد ونشر**:",
+                f"📚 **تم حفظ ملف الـ PDF!**\n\n"
+                f"• الكابشن المقترح: {clean_title}\n\n"
+                f"أرسل الكابشن المطلوب أو اضغط اعتماد:",
                 reply_markup=confirm_markup
             )
 
 # -------------------------------------------------------------
-# 8. التفاعل والأسئلة السرية والبحث
+# 9. التفاعل والأسئلة السرية والبحث
 # -------------------------------------------------------------
 async def handle_user_interactions_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -712,7 +696,6 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
     is_pg = bool(DATABASE_URL and psycopg2)
     ph = "%s" if is_pg else "?"
 
-    # المشرف يجيب على سؤال العضو
     if user.id == ADMIN_USER_ID and action == "answering_member_question":
         target_uid = context.user_data.get("target_user_id")
         target_uname = context.user_data.get("target_user_name", "المتابع")
@@ -741,7 +724,6 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         context.user_data.clear()
         return
 
-    # استقبال سؤال في (إسأل الشيخ)
     if action == "awaiting_private_question":
         q_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
         q_type = "voice" if update.message.voice else "text"
@@ -784,7 +766,6 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         await update.message.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيقوم الشيخ بالاطلاع عليه والإجابة عن استشارتك قريباً بإذن الله.")
         return
 
-    # استقبال تعليق
     elif action == "comment":
         lecture_id = context.user_data.get("lecture_id")
         c_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
@@ -812,7 +793,6 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         await update.message.reply_text("✅ تم استلام تعليقك بنجاح.")
         return
 
-    # تنفيذ البحث
     elif action == "awaiting_search_query":
         query = update.message.text
         with get_db_connection() as conn:
@@ -837,7 +817,6 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         context.user_data.clear()
         return
 
-    # مسودات نصوص المشرف
     if user.id == ADMIN_USER_ID and "draft" in context.user_data:
         draft = context.user_data["draft"]
         draft_action = context.user_data.get("action")
@@ -880,36 +859,25 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
                     caption=f"📋 **معاينة المنشور النهائي للبوستر:**\n\n{draft['caption']}\n\nهل تعتمد النشر في القناة الآن؟",
                     reply_markup=confirm_markup
                 )
-            elif draft.get("cover_file_id"):
-                await update.message.reply_photo(
-                    photo=draft["cover_file_id"],
-                    caption=f"📋 **معاينة بطاقة المنشور:**\n\n{draft['caption']}\n\nهل تريد النشر؟",
-                    reply_markup=confirm_markup
-                )
             elif draft.get("cover_bytes"):
                 await update.message.reply_photo(
                     photo=io.BytesIO(draft["cover_bytes"]),
-                    caption=f"📋 **معاينة بطاقة المنشور:**\n\n{draft['caption']}\n\nهل تريد النشر؟",
+                    caption=f"📋 **معاينة غلاف المنشور:**\n\n{draft['caption']}\n\nهل تعتمد النشر في القناة؟",
                     reply_markup=confirm_markup
                 )
             else:
                 await update.message.reply_text(
-                    f"📋 **معاينة النص للمنشور:**\n\n{draft['caption']}\n\nهل تعتمد النشر في القناة؟",
+                    f"📋 **معاينة النص للمنشور:**\n\n{draft['caption']}",
                     reply_markup=confirm_markup
                 )
 
 # -------------------------------------------------------------
-# 9. أزرار القوائم والردود
+# 10. أزرار القوائم والردود
 # -------------------------------------------------------------
 async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-
-    if data == "prompt_custom_cover":
-        context.user_data["action"] = "awaiting_custom_cover"
-        await query.message.reply_text("🖼 **أرسل الآن صورة الغلاف التي تريد وضعها لبطاقة الكتاب:**")
-        return
 
     if data.startswith("answer_user_"):
         target_uid = int(data.replace("answer_user_", ""))
@@ -943,7 +911,6 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text("❌ تم إلغاء المسودة.")
         return
 
-    # تسليم المادة
     if data.startswith("get_"):
         parts = data.split("_")
         action_pfx = parts[1]
@@ -969,7 +936,6 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
             await query.message.reply_photo(photo=pub[1], caption=pub[3] or "", parse_mode="HTML")
         return
 
-    # تأكيد النشر
     if data == "confirm_publish":
         draft = context.user_data.get("draft")
         if not draft:
@@ -986,9 +952,8 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
         file_id = draft["file_id"]
         caption = draft["caption"]
         cover_bytes = draft.get("cover_bytes")
-        cover_file_id = draft.get("cover_file_id")
 
-        pub_id = save_publication(media_type, file_id, cover_file_id or "", caption)
+        pub_id = save_publication(media_type, file_id, "", caption)
 
         if "video" in media_type:
             btn_text = "🎬 مشاهدة الفيديو"
@@ -1009,14 +974,6 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
             sent_msg = await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=file_id,
-                caption=caption,
-                reply_markup=reply_markup,
-                parse_mode="HTML"
-            )
-        elif cover_file_id:
-            sent_msg = await context.bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=cover_file_id,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode="HTML"
@@ -1048,7 +1005,7 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text(f"✅ **تم النشر في القناة بنجاح (المعرف: `{pub_id}`).**")
 
 # -------------------------------------------------------------
-# 10. تشغيل التطبيق
+# 11. تشغيل التطبيق
 # -------------------------------------------------------------
 def main():
     if not BOT_TOKEN:
