@@ -2,4 +2,8 @@ python-telegram-bot[job-queue]
 PyMuPDF
 Pillow
 opencv-python-headless
+arabic-reshaper
+python-bidi
+requests
+
 
