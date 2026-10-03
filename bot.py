@@ -13,6 +13,12 @@ from PIL import Image, ImageDraw, ImageFont
 
 import arabic_reshaper
 
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -28,7 +34,7 @@ from telegram.ext import (
 )
 
 # -------------------------------------------------------------
-# 1. خادم ويب مصغر للحفاظ على استمرارية الخدمة مجاناً
+# 1. خادم ويب مصغر للحفاظ على استمرارية الخدمة
 # -------------------------------------------------------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -45,7 +51,7 @@ def run_web_server():
         logging.error(f"Web server error: {e}")
 
 # -------------------------------------------------------------
-# 2. الإعدادات وقاعدة البيانات
+# 2. الإعدادات وقاعدة البيانات الدائمة (PostgreSQL / SQLite)
 # -------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
@@ -55,102 +61,128 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@diaa_samy2")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
-DB_NAME = "channel_bot_data.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+LOCAL_DB_NAME = "channel_bot_data.db"
+
+def get_db_connection():
+    if DATABASE_URL and psycopg2:
+        return psycopg2.connect(DATABASE_URL)
+    return sqlite3.connect(LOCAL_DB_NAME)
 
 def init_db():
-    with sqlite3.connect(DB_NAME) as conn:
+    is_pg = bool(DATABASE_URL and psycopg2)
+    id_col = "id SERIAL PRIMARY KEY" if is_pg else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    ts_default = "CURRENT_TIMESTAMP"
+
+    with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS publications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                {id_col},
                 media_type TEXT NOT NULL,
                 file_id TEXT NOT NULL,
                 cover_file_id TEXT,
                 caption TEXT,
                 channel_msg_id INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT {ts_default}
             )
         """)
-        cursor.execute("""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS media_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                {id_col},
                 lecture_id INTEGER NOT NULL,
                 event_type TEXT NOT NULL,
-                user_id INTEGER NOT NULL,
+                user_id BIGINT NOT NULL,
                 username TEXT,
                 full_name TEXT,
-                event_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                event_time TIMESTAMP DEFAULT {ts_default}
             )
         """)
-        cursor.execute("""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS comments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                {id_col},
                 lecture_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
+                user_id BIGINT NOT NULL,
                 username TEXT,
                 full_name TEXT,
                 comment_type TEXT NOT NULL,
                 comment_content TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT {ts_default}
             )
         """)
-        cursor.execute("""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS private_questions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
+                {id_col},
+                user_id BIGINT NOT NULL,
                 username TEXT,
                 full_name TEXT,
                 question_type TEXT NOT NULL,
                 question_content TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT {ts_default}
             )
         """)
         conn.commit()
 
 def log_event(lecture_id: int, event_type: str, user):
-    with sqlite3.connect(DB_NAME) as conn:
+    is_pg = bool(DATABASE_URL and psycopg2)
+    ph = "%s" if is_pg else "?"
+    with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             INSERT INTO media_events (lecture_id, event_type, user_id, username, full_name)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
         """, (lecture_id, event_type, user.id, user.username or "بدون معرف", user.full_name or "مجهول"))
         conn.commit()
 
 def save_publication(media_type: str, file_id: str, cover_file_id: str, caption: str) -> int:
-    with sqlite3.connect(DB_NAME) as conn:
+    is_pg = bool(DATABASE_URL and psycopg2)
+    with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO publications (media_type, file_id, cover_file_id, caption)
-            VALUES (?, ?, ?, ?)
-        """, (media_type, file_id, cover_file_id, caption))
+        if is_pg:
+            cursor.execute("""
+                INSERT INTO publications (media_type, file_id, cover_file_id, caption)
+                VALUES (%s, %s, %s, %s) RETURNING id
+            """, (media_type, file_id, cover_file_id, caption))
+            pub_id = cursor.fetchone()[0]
+        else:
+            cursor.execute("""
+                INSERT INTO publications (media_type, file_id, cover_file_id, caption)
+                VALUES (?, ?, ?, ?)
+            """, (media_type, file_id, cover_file_id, caption))
+            pub_id = cursor.lastrowid
         conn.commit()
-        return cursor.lastrowid
+        return pub_id
 
 def update_publication_msg_id(publication_id: int, msg_id: int):
-    with sqlite3.connect(DB_NAME) as conn:
+    is_pg = bool(DATABASE_URL and psycopg2)
+    ph = "%s" if is_pg else "?"
+    with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("UPDATE publications SET channel_msg_id = ? WHERE id = ?", (msg_id, publication_id))
+        cursor.execute(f"UPDATE publications SET channel_msg_id = {ph} WHERE id = {ph}", (msg_id, publication_id))
         conn.commit()
 
 def get_publication(publication_id: int):
-    with sqlite3.connect(DB_NAME) as conn:
+    is_pg = bool(DATABASE_URL and psycopg2)
+    ph = "%s" if is_pg else "?"
+    with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT media_type, file_id, cover_file_id, caption, channel_msg_id FROM publications WHERE id = ?", (publication_id,))
+        cursor.execute(f"SELECT media_type, file_id, cover_file_id, caption, channel_msg_id FROM publications WHERE id = {ph}", (publication_id,))
         return cursor.fetchone()
 
 def get_all_materials_by_type(media_type_filter: str):
-    """جلب جميع المواد المسجلة بالكامل دون استثناء أو حصر"""
-    with sqlite3.connect(DB_NAME) as conn:
+    is_pg = bool(DATABASE_URL and psycopg2)
+    ph = "%s" if is_pg else "?"
+    with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, caption FROM publications 
-            WHERE media_type LIKE ? 
+            WHERE media_type LIKE {ph} 
             ORDER BY id DESC
         """, (f"%{media_type_filter}%",))
         return cursor.fetchall()
 
 # -------------------------------------------------------------
-# 3. إدارة الخط والتصميم الزخرفي الإسلامي
+# 3. إدارة الخط والتصميم الزخرفي الإسلامي بمساحة كتابة موسعة
 # -------------------------------------------------------------
 FONT_FILE = "Amiri-Bold.ttf"
 
@@ -175,46 +207,95 @@ def get_font(size=64):
     return ImageFont.load_default()
 
 def create_islamic_audio_card(title_text: str) -> io.BytesIO:
+    """تصميم بطاقة إسلامية أنيقة مع مساحة موسعة طولاً وعرضاً وضبط تلقائي للأبعاد"""
     ensure_font_downloaded()
 
     width, height = 1080, 1080
-    bg_color = (15, 23, 42)
-    gold_color = (212, 175, 55)
-    gold_light = (245, 222, 130)
+    bg_color = (15, 23, 42)       # كحلي ملكي عميق
+    gold_color = (212, 175, 55)   # ذهبي أصيل
+    gold_light = (245, 222, 130)  # لمعان ذهبي ناصع
 
     img = Image.new("RGB", (width, height), color=bg_color)
     draw = ImageDraw.Draw(img)
 
-    draw.rectangle([(35, 35), (width - 35, height - 35)], outline=gold_color, width=4)
-    draw.rectangle([(55, 55), (width - 55, height - 55)], outline=gold_light, width=2)
-    draw.rectangle([(75, 75), (width - 75, height - 75)], outline=gold_color, width=1)
+    # 1. إطارات خارجية محسوبة لمنح أقصى مساحة للكتابة
+    draw.rectangle([(25, 25), (width - 25, height - 25)], outline=gold_color, width=3)
+    draw.rectangle([(42, 42), (width - 42, height - 42)], outline=gold_light, width=2)
+    draw.rectangle([(58, 58), (width - 58, height - 58)], outline=gold_color, width=1)
 
-    for cx, cy in [(75, 75), (width - 75, 75), (75, height - 75), (width - 75, height - 75)]:
-        draw.line([(cx - 20, cy), (cx + 35, cy)], fill=gold_light, width=2)
-        draw.line([(cx, cy - 20), (cx + 35, cy)], fill=gold_light, width=2)
-        draw.rectangle([(cx - 10, cy - 10), (cx + 10, cy + 10)], outline=gold_color, width=2)
+    # 2. زخارف الأركان
+    for cx, cy in [(58, 58), (width - 58, 58), (58, height - 58), (width - 58, height - 58)]:
+        draw.line([(cx - 18, cy), (cx + 30, cy)], fill=gold_light, width=2)
+        draw.line([(cx, cy - 18), (cx + 30, cy)], fill=gold_light, width=2)
+        draw.rectangle([(cx - 8, cy - 8), (cx + 8, cy + 8)], outline=gold_color, width=2)
 
+    # 3. أيقونة الهلال والرمز الصوتي (في أعلى الكرت بدقة لمنح مساحة رأسية حرة)
     center_x = width // 2
-    draw.arc([(center_x - 50, 160), (center_x + 50, 260)], start=25, end=275, fill=gold_light, width=5)
-    draw.ellipse([(center_x - 12, 198), (center_x + 12, 222)], fill=gold_color)
-    draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=320, end=40, fill=gold_color, width=3)
-    draw.arc([(center_x - 80, 130), (center_x + 80, 290)], start=140, end=220, fill=gold_color, width=3)
+    draw.arc([(center_x - 45, 115), (center_x + 45, 205)], start=25, end=275, fill=gold_light, width=4)
+    draw.ellipse([(center_x - 10, 149), (center_x + 10, 171)], fill=gold_color)
+    draw.arc([(center_x - 70, 90), (center_x + 70, 230)], start=320, end=40, fill=gold_color, width=3)
+    draw.arc([(center_x - 70, 90), (center_x + 70, 230)], start=140, end=220, fill=gold_color, width=3)
 
-    display_title = title_text if title_text else "تسجيل صوتي مبارك"
-    try:
-        reshaped_text = arabic_reshaper.reshape(display_title)
-    except Exception:
-        reshaped_text = display_title
+    # 4. معالجة وتجهيز الأسطر
+    raw_lines = [line.strip() for line in (title_text or "تسجيل صوتي مبارك").split("\n") if line.strip()]
+    if not raw_lines:
+        raw_lines = ["تسجيل صوتي مبارك"]
 
-    font = get_font(size=62)
+    reshaped_lines = []
+    for line in raw_lines:
+        try:
+            reshaped_lines.append(arabic_reshaper.reshape(line))
+        except Exception:
+            reshaped_lines.append(line)
 
-    draw.line([(180, 480), (width - 180, 480)], fill=gold_color, width=3)
-    draw.ellipse([(center_x - 7, 473), (center_x + 7, 487)], fill=gold_light)
+    # 5. احتساب حجم الخط ديناميكياً لاستيعاب النص طولاً وعرضاً داخل حدود 940 بكسل
+    max_allowed_width = 940
+    max_allowed_height = 540  # مساحة رأسية رحبة للكتابة
 
-    draw.text((center_x, 560), reshaped_text, fill=gold_light, font=font, anchor="mm")
+    font_size = 62 if len(reshaped_lines) == 1 else (52 if len(reshaped_lines) == 2 else 44)
+    min_font_size = 24
 
-    draw.line([(180, 640), (width - 180, 640)], fill=gold_color, width=3)
-    draw.ellipse([(center_x - 7, 633), (center_x + 7, 647)], fill=gold_light)
+    while font_size > min_font_size:
+        test_font = get_font(font_size)
+        fits_width = True
+        for line in reshaped_lines:
+            bbox = draw.textbbox((0, 0), line, font=test_font)
+            line_w = bbox[2] - bbox[0]
+            if line_w > max_allowed_width:
+                fits_width = False
+                break
+        
+        line_h = int(font_size * 1.5)
+        total_h = len(reshaped_lines) * line_h
+        fits_height = (total_h <= max_allowed_height)
+
+        if fits_width and fits_height:
+            break
+        font_size -= 2
+
+    chosen_font = get_font(font_size)
+    line_height = int(font_size * 1.52)
+    total_text_height = len(reshaped_lines) * line_height
+
+    # مركز الكتابة وتوزيع الفواصل الذهبية بمرونة
+    center_y = 560
+    start_y = center_y - (total_text_height // 2) + (line_height // 2)
+
+    top_separator_y = max(260, start_y - (line_height // 2) - 45)
+    bottom_separator_y = min(860, start_y + total_text_height - (line_height // 2) + 45)
+
+    # الخط الفاصل الذهبي العلوي الموسع
+    draw.line([(95, top_separator_y), (width - 95, top_separator_y)], fill=gold_color, width=3)
+    draw.ellipse([(center_x - 8, top_separator_y - 8), (center_x + 8, top_separator_y + 8)], fill=gold_light)
+
+    # كتابة النصوص متمركزة ومتباعدة بتناسق
+    for i, line in enumerate(reshaped_lines):
+        cur_y = start_y + (i * line_height)
+        draw.text((center_x, cur_y), line, fill=gold_light, font=chosen_font, anchor="mm")
+
+    # الخط الفاصل الذهبي السفلي الموسع
+    draw.line([(95, bottom_separator_y), (width - 95, bottom_separator_y)], fill=gold_color, width=3)
+    draw.ellipse([(center_x - 8, bottom_separator_y - 8), (center_x + 8, bottom_separator_y + 8)], fill=gold_light)
 
     output = io.BytesIO()
     img.save(output, format="JPEG", quality=95)
@@ -242,14 +323,9 @@ def extract_video_frame(video_path: str) -> io.BytesIO:
     return None
 
 # -------------------------------------------------------------
-# 4. لوحات الأزرار (بالترتيب المعكوس المطلوب يميناً ويساراً)
+# 4. لوحات الأزرار
 # -------------------------------------------------------------
 def build_channel_control_panel(bot_uname: str):
-    """
-    الصف الأول: [ الخطب والمحاضرات ] يميناً | [ الفيديوهات المرئية ] يساراً
-    الصف الثاني: [ الكتب والرسائل ] يميناً | [ البحث في المحتوى ] يساراً
-    الصف الثالث: [ إسأل الشيخ ] بعرض كامل
-    """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎙 الخطب والمحاضرات", url=f"https://t.me/{bot_uname}?start=cat_audio"),
@@ -318,7 +394,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ب) تصفح جميع المواد كاملة (صوتيات / فيديوهات / كتب)
+    # ب) تصفح جميع المواد
     elif payload.startswith("cat_"):
         c_type = payload.replace("cat_", "")
         type_names = {"audio": "الخطب والمحاضرات الصوتية", "video": "المقاطع المرئية (الفيديو)", "pdf": "الكتب والمستندات (PDF)"}
@@ -585,6 +661,8 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
 async def handle_user_interactions_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     action = context.user_data.get("action")
+    is_pg = bool(DATABASE_URL and psycopg2)
+    ph = "%s" if is_pg else "?"
 
     # المشرف يجيب على سؤال العضو
     if user.id == ADMIN_USER_ID and action == "answering_member_question":
@@ -620,11 +698,11 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         q_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
         q_type = "voice" if update.message.voice else "text"
 
-        with sqlite3.connect(DB_NAME) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 INSERT INTO private_questions (user_id, username, full_name, question_type, question_content)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
             """, (user.id, user.username or "بدون معرف", user.full_name or "مجهول", q_type, q_content))
             conn.commit()
 
@@ -664,11 +742,11 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         c_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
         c_type = "voice" if update.message.voice else "text"
 
-        with sqlite3.connect(DB_NAME) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 INSERT INTO comments (lecture_id, user_id, username, full_name, comment_type, comment_content)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})
             """, (lecture_id, user.id, user.username or "بدون معرف", user.full_name or "مجهول", c_type, c_content))
             conn.commit()
 
@@ -689,9 +767,9 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
     # تنفيذ البحث في كافة محتويات القناة
     elif action == "awaiting_search_query":
         query = update.message.text
-        with sqlite3.connect(DB_NAME) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, caption, media_type FROM publications WHERE caption LIKE ? ORDER BY id DESC", (f"%{query}%",))
+            cursor.execute(f"SELECT id, caption, media_type FROM publications WHERE caption LIKE {ph} ORDER BY id DESC", (f"%{query}%",))
             results = cursor.fetchall()
 
         if not results:
@@ -773,7 +851,6 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     data = query.data
-    user = update.effective_user
 
     if data.startswith("answer_user_"):
         target_uid = int(data.replace("answer_user_", ""))
