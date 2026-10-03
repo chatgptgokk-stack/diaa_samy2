@@ -138,14 +138,15 @@ def get_publication(publication_id: int):
         cursor.execute("SELECT media_type, file_id, cover_file_id, caption, channel_msg_id FROM publications WHERE id = ?", (publication_id,))
         return cursor.fetchone()
 
-def get_materials_by_type(media_type_filter: str, limit: int = 6):
+def get_all_materials_by_type(media_type_filter: str):
+    """جلب جميع المواد المسجلة بالكامل دون استثناء أو حصر"""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, caption FROM publications 
             WHERE media_type LIKE ? 
-            ORDER BY id DESC LIMIT ?
-        """, (f"%{media_type_filter}%", limit))
+            ORDER BY id DESC
+        """, (f"%{media_type_filter}%",))
         return cursor.fetchall()
 
 # -------------------------------------------------------------
@@ -241,9 +242,14 @@ def extract_video_frame(video_path: str) -> io.BytesIO:
     return None
 
 # -------------------------------------------------------------
-# 4. لوحات الأزرار
+# 4. لوحات الأزرار (بالترتيب المعكوس المطلوب يميناً ويساراً)
 # -------------------------------------------------------------
 def build_channel_control_panel(bot_uname: str):
+    """
+    الصف الأول: [ الخطب والمحاضرات ] يميناً | [ الفيديوهات المرئية ] يساراً
+    الصف الثاني: [ الكتب والرسائل ] يميناً | [ البحث في المحتوى ] يساراً
+    الصف الثالث: [ إسأل الشيخ ] بعرض كامل
+    """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎙 الخطب والمحاضرات", url=f"https://t.me/{bot_uname}?start=cat_audio"),
@@ -288,11 +294,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id == ADMIN_USER_ID:
             msg = (
                 "👋 **مرحباً بك يا مدير القناة في لوحة التحكم الإدارية:**\n\n"
-                "• لإرسال لوحة التحكم والتنقل إلى القناة: أرسل الأمر `/menu`.\n"
-                "• **إرسال فيديو:** كادر سينمائي أنيق واعتماد الكابشن.\n"
-                "• **إرسال صوت:** تصميم إسلامي ملكي بالعنوان المختار.\n"
+                "• لتحديث لوحة الأزرار في القناة: أرسل الأمر `/menu`.\n"
+                "• **إرسال فيديو:** كادر سينمائي واعتماد الكابشن.\n"
+                "• **إرسال صوت:** تصميم إسلامي ملكي بالعنوان المطلوب.\n"
                 "• **إرسال صورة:** مسودة ومعاينة للبوسترات قبل النشر.\n"
-                "• **إرسال PDF:** استخراج الغلاف وتجهيز زر التحميل."
+                "• **إرسال PDF:** استخراج الغلاف وزر التحميل المباشر."
             )
             await update.message.reply_text(msg, parse_mode="Markdown")
         else:
@@ -306,17 +312,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "awaiting_private_question"
         await update.message.reply_text(
             "🔒 **مرحباً بك في خدمة (إسأل الشيخ) الخاصة:**\n\n"
-            "هذه المحادثة سرية ومشفرة بالكامل ولا يطلع عليها أحد.\n"
+            "هذه المحادثة سرية ومشفرة بالكامل ولا يطّلع عليها أحد.\n"
             "تفضل بكتابة سؤالك الآن نصياً أو أرسله كتسجيل صوتي (🎙):",
             parse_mode="Markdown"
         )
         return
 
-    # ب) تصفح الأقسام
+    # ب) تصفح جميع المواد كاملة (صوتيات / فيديوهات / كتب)
     elif payload.startswith("cat_"):
         c_type = payload.replace("cat_", "")
-        type_names = {"audio": "الخطب والمحاضرات", "video": "المقاطع المرئية", "pdf": "الكتب والمؤلفات"}
-        materials = get_materials_by_type(c_type, limit=8)
+        type_names = {"audio": "الخطب والمحاضرات الصوتية", "video": "المقاطع المرئية (الفيديو)", "pdf": "الكتب والمستندات (PDF)"}
+        materials = get_all_materials_by_type(c_type)
         
         if not materials:
             await update.message.reply_text(f"لا توجد مواد منشورة حالياً في قسم {type_names.get(c_type, '')}.")
@@ -325,11 +331,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = []
         action_prefix = "watch" if c_type == "video" else ("listen" if c_type == "audio" else "doc")
         for m_id, cap in materials:
-            clean_title = (cap or f"المادة رقم {m_id}").split("\n")[0][:35]
+            clean_title = (cap or f"المادة رقم {m_id}").split("\n")[0][:45]
             kb.append([InlineKeyboardButton(f"🔹 {clean_title}", callback_data=f"get_{action_prefix}_{m_id}")])
 
         await update.message.reply_text(
-            f"📂 **فهرس {type_names.get(c_type, '')}:**\nاختر ما ترغب في استلامه بالخاص مباشرة:",
+            f"📂 **جميع مواد قسم ({type_names.get(c_type, '')}):**\n"
+            f"عدد المواد المتاحة: ({len(materials)})\n"
+            f"اضغط على أي مادة لاستلامها في الخاص فوراً:",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
@@ -338,10 +346,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ج) البحث
     elif payload == "act_search":
         context.user_data["action"] = "awaiting_search_query"
-        await update.message.reply_text("🔍 **البحث في القناة:**\nاكتب كلمة البحث للبحث في عناوين الخطب، الفيديوهات، والكتب:")
+        await update.message.reply_text(
+            "🔍 **البحث في جميع محتويات القناة:**\n\n"
+            "أرسل الآن كلمة البحث للبحث في عناوين الخطب، الفيديوهات، والكتب وسأوافيك بالنتائج فوراً:"
+        )
         return
 
-    # د) تسليم المواد
+    # د) تسليم المواد المباشرة
     elif payload.startswith("watch_"):
         lecture_id = int(payload.split("_")[1])
         pub = get_publication(lecture_id)
@@ -422,7 +433,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # -------------------------------------------------------------
-# 6. أمر إرسال الفهرس العام للقناة (`/menu`)
+# 6. أمر إرسال لوحة التحكم والتنقل إلى القناة (`/menu`)
 # -------------------------------------------------------------
 async def post_menu_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
@@ -443,7 +454,7 @@ async def post_menu_to_channel(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=panel_markup,
         parse_mode="Markdown"
     )
-    await update.message.reply_text("✅ تم نشر لوحة الأزرار في القناة بنجاح! يمكنك تثبيتها (Pin) في أعلى القناة الآن.")
+    await update.message.reply_text("✅ تم تحديث ونشر لوحة الأزرار في القناة بنجاح! يمكنك تثبيتها (Pin) في أعلى القناة الآن.")
 
 # -------------------------------------------------------------
 # 7. تجهيز الوسائط والمسودات التحريرية
@@ -569,13 +580,13 @@ async def handle_admin_media_preparation(update: Update, context: ContextTypes.D
             await msg.reply_text("📚 أرسل نص الكابشن لبطاقة الكتاب، أو أرسل `اعتماد`.")
 
 # -------------------------------------------------------------
-# 8. التفاعل والأسئلة السرية والرد المباشر
+# 8. التفاعل والأسئلة السرية والبحث
 # -------------------------------------------------------------
 async def handle_user_interactions_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     action = context.user_data.get("action")
 
-    # أ) المشرف يرسل الإجابة بعد الضغط على زر "الإجابة على سؤال العضو"
+    # المشرف يجيب على سؤال العضو
     if user.id == ADMIN_USER_ID and action == "answering_member_question":
         target_uid = context.user_data.get("target_user_id")
         target_uname = context.user_data.get("target_user_name", "المتابع")
@@ -599,12 +610,12 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
                 parse_mode="Markdown"
             )
         except Exception as e:
-            await update.message.reply_text(f"⚠️ تعذر تسليم الرد للمستخدم (ربما قام بحظر البوت): {e}")
+            await update.message.reply_text(f"⚠️ تعذر تسليم الرد للمستخدم: {e}")
 
         context.user_data.clear()
         return
 
-    # ب) استقبال سؤال سري من العضو عبر (إسأل الشيخ)
+    # استقبال سؤال في (إسأل الشيخ)
     if action == "awaiting_private_question":
         q_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
         q_type = "voice" if update.message.voice else "text"
@@ -617,12 +628,10 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
             """, (user.id, user.username or "بدون معرف", user.full_name or "مجهول", q_type, q_content))
             conn.commit()
 
-        # زر الإجابة المباشر للمشرف
         reply_member_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("✍️ الإجابة على سؤال العضو", callback_data=f"answer_user_{user.id}")]
         ])
 
-        # إشعار المشرف بالسؤال السري
         await context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=f"❓ **سؤال واستشارة خاصة واردة للشيخ (سري جداً)**\n"
@@ -649,7 +658,7 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         await update.message.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيقوم الشيخ بالاطلاع عليه والإجابة عن استشارتك قريباً بإذن الله.")
         return
 
-    # ج) استقبال تعليق على منشور
+    # استقبال تعليق
     elif action == "comment":
         lecture_id = context.user_data.get("lecture_id")
         c_content = update.message.text or (update.message.voice.file_id if update.message.voice else "")
@@ -677,12 +686,12 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         await update.message.reply_text("✅ تم استلام تعليقك بنجاح.")
         return
 
-    # د) البحث
+    # تنفيذ البحث في كافة محتويات القناة
     elif action == "awaiting_search_query":
         query = update.message.text
         with sqlite3.connect(DB_NAME) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, caption, media_type FROM publications WHERE caption LIKE ? LIMIT 6", (f"%{query}%",))
+            cursor.execute("SELECT id, caption, media_type FROM publications WHERE caption LIKE ? ORDER BY id DESC", (f"%{query}%",))
             results = cursor.fetchall()
 
         if not results:
@@ -690,19 +699,19 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
         else:
             kb = []
             for r_id, r_cap, r_type in results:
-                title = (r_cap or f"المادة {r_id}").split("\n")[0][:35]
+                title = (r_cap or f"المادة {r_id}").split("\n")[0][:45]
                 action_pfx = "watch" if "video" in r_type else ("listen" if "audio" in r_type or r_type == "voice" else ("doc" if r_type == "pdf" else "view"))
                 kb.append([InlineKeyboardButton(f"🔗 {title}", callback_data=f"get_{action_pfx}_{r_id}")])
 
             await update.message.reply_text(
-                f"🔎 **نتائج البحث عن:** `{query}`\nاضغط على أي مادة لاستلامها فوراً:",
+                f"🔎 **نتائج البحث عن:** `{query}` (عدد النتائج: {len(results)})\nاضغط على أي مادة لاستلامها فوراً:",
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode="Markdown"
             )
         context.user_data.clear()
         return
 
-    # هـ) مسودات المشرف
+    # مسودات نصوص المشرف
     if user.id == ADMIN_USER_ID and "draft" in context.user_data:
         draft = context.user_data["draft"]
         draft_action = context.user_data.get("action")
@@ -758,7 +767,7 @@ async def handle_user_interactions_and_inputs(update: Update, context: ContextTy
                 )
 
 # -------------------------------------------------------------
-# 9. أزرار القوائم والرد على الأسئلة
+# 9. أزرار القوائم والردود
 # -------------------------------------------------------------
 async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -766,7 +775,6 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
     data = query.data
     user = update.effective_user
 
-    # المشرف يضغط على زر "الإجابة على سؤال العضو"
     if data.startswith("answer_user_"):
         target_uid = int(data.replace("answer_user_", ""))
         context.user_data["action"] = "answering_member_question"
@@ -796,7 +804,7 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_caption("❌ تم إلغاء المسودة.")
         return
 
-    # تسليم المواد
+    # تسليم المادة المختارة من القائمة بالخاص
     if data.startswith("get_"):
         parts = data.split("_")
         action_pfx = parts[1]
@@ -822,7 +830,7 @@ async def handle_callback_queries(update: Update, context: ContextTypes.DEFAULT_
             await query.message.reply_photo(photo=pub[1], caption=pub[3] or "", parse_mode="HTML")
         return
 
-    # اعتماد ونشر المنشور في القناة
+    # تأكيد النشر
     if data == "confirm_publish":
         draft = context.user_data.get("draft")
         if not draft:
