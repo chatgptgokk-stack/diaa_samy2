@@ -4,6 +4,7 @@ import io
 import html
 import logging
 import threading
+import asyncio
 import urllib.request
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -13,6 +14,7 @@ import fitz  # PyMuPDF
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 
+from telethon import TelegramClient
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -40,8 +42,14 @@ ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "8389850706"))
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "@DiaaEldinSamy4")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+API_ID = int(os.environ.get("TELEGRAM_API_ID", 35497195))
+API_HASH = os.environ.get("TELEGRAM_API_HASH", "c977fd59eb678ce870a95cb8fc6baa10")
+
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf"
 FONT_PATH = "Amiri-Bold.ttf"
+
+# عميل Telethon لتنزيل الملفات الكبيرة
+telethon_client = TelegramClient("bot_session", API_ID, API_HASH)
 
 # ----------------- خادم الويب لمراقبة UptimeRobot -----------------
 class SimpleHealthHandler(BaseHTTPRequestHandler):
@@ -241,7 +249,6 @@ def create_audio_poster(title_text: str) -> bytes:
     image = Image.new("RGB", (width, height), color=(18, 30, 49))
     draw = ImageDraw.Draw(image)
 
-    # إطار إسلامي ذهبي
     draw.rectangle([45, 45, width - 45, height - 45], outline=(212, 175, 55), width=7)
     draw.rectangle([65, 65, width - 65, height - 65], outline=(160, 130, 40), width=2)
 
@@ -280,6 +287,18 @@ def create_audio_poster(title_text: str) -> bytes:
     image.save(out_buffer, format="JPEG", quality=95)
     return out_buffer.getvalue()
 
+# تنزيل عبر Telethon لتجاوز حاجز الـ 20MB
+async def download_large_file_telethon(chat_id: int, message_id: int) -> bytes:
+    try:
+        t_msg = await telethon_client.get_messages(chat_id, ids=message_id)
+        if t_msg and t_msg.media:
+            out_bio = io.BytesIO()
+            await telethon_client.download_media(t_msg.media, file=out_bio)
+            return out_bio.getvalue()
+    except Exception as e:
+        logger.error(f"خطأ أثناء التحميل عبر Telethon: {e}")
+    return None
+
 # ----------------- معالجات الأوامر والروابط -----------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -293,7 +312,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• لتحديث لوحة الأزرار في القناة: أرسل الأمر /menu.\n"
                 "• إرسال صوتيات: تصميم إسلامي ملكي بعد كتابة الكابشن بيدك.\n"
                 "• إرسال فيديو (مباشر أو كملف): كادر نقي مع طلب الكابشن.\n"
-                "• إرسال PDF: استخراج صفحة الغلاف مع طلب الكابشن.\n"
+                "• إرسال PDF (مهما كان حجمه): استخراج الغلاف تلقائياً.\n"
                 "• إرسال صورة / بوستر: نشر دعوي مباشر مع طلب الكابشن."
             )
             await update.message.reply_text(admin_panel)
@@ -473,7 +492,6 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_me = await context.bot.get_me()
 
-    # الترتيب معدل هندسياً ليظهر في تيليجرام باللغة العربية (RTL):
     keyboard = [
         [
             InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
@@ -511,7 +529,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg = update.message
     bot_me = await context.bot.get_me()
 
-    # 1. تنفيذ البحث عند كتابة المستخدم لكلمة البحث
+    # 1. تنفيذ البحث
     if context.user_data.get("awaiting_search_query") and msg.text:
         context.user_data["awaiting_search_query"] = False
         search_kw = msg.text.strip()
@@ -542,7 +560,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    # 2. استلام سؤال خاص للشيخ (متاح للجميع وللأدمن أثناء التجربة)
+    # 2. استلام سؤال خاص للشيخ
     if context.user_data.get("awaiting_question"):
         context.user_data["awaiting_question"] = False
         clean_name = html.escape(user.full_name or "بدون اسم")
@@ -568,7 +586,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيجيب عليه الشيخ قريباً بإذن الله.")
         return
 
-    # 3. استلام تعليق العضو حول مادة محددة (متاح للجميع وللأدمن)
+    # 3. استلام تعليق العضو
     if context.user_data.get("awaiting_material_comment"):
         pub_id = context.user_data["awaiting_material_comment"]
         context.user_data["awaiting_material_comment"] = None
@@ -597,7 +615,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ شكراً لك، تم تسجيل تعليقك وإرساله للإدارة بنجاح.")
         return
 
-    # 4. إرسال رد المشرف للسائل أو المعلق
+    # 4. إرسال رد المشرف
     if user.id == ADMIN_USER_ID and context.user_data.get("answering_user_id"):
         target_id = context.user_data["answering_user_id"]
         try:
@@ -621,11 +639,10 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["answering_user_id"] = None
         return
 
-    # التحقق من صلاحية الإدارة للعمليات التالية
     if user.id != ADMIN_USER_ID:
         return
 
-    # 5. استقبال ملف صوتي جديد (تصفير أي انتظار سابق فوراً)
+    # 5. ملف صوتي
     if msg.audio or msg.voice:
         context.user_data.clear()
         context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
@@ -634,7 +651,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 6. استقبال مقطع فيديو مباشر
+    # 6. فيديو مباشر
     if msg.video:
         context.user_data.clear()
         status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
@@ -644,16 +661,19 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 thumb_file = await context.bot.get_file(msg.video.thumbnail.file_id)
                 frame_bytes = await thumb_file.download_as_bytearray()
 
-            if not frame_bytes and (msg.video.file_size or 0) < 20 * 1024 * 1024:
-                tg_file = await context.bot.get_file(msg.video.file_id)
-                temp_path = f"temp_vid_{msg.video.file_id[:8]}.mp4"
-                await tg_file.download_to_drive(temp_path)
-                frame_bytes = extract_video_frame(temp_path)
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+            if not frame_bytes:
+                # محاولة عبر Telethon لتجاوز أي قيد حجم
+                raw_data = await download_large_file_telethon(msg.chat_id, msg.message_id)
+                if raw_data:
+                    temp_path = f"temp_vid_{msg.message_id}.mp4"
+                    with open(temp_path, "wb") as f:
+                        f.write(raw_data)
+                    frame_bytes = extract_video_frame(temp_path)
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
 
             if not frame_bytes:
-                await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو، يرجى إرسال صورة كغلاف للفيديو أولاً.")
+                await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو، يرجى إرسال صورة كغلاف أولاً.")
                 return
 
             context.user_data["temp_media_type"] = "video"
@@ -669,38 +689,40 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 caption="✍️ <b>تم التقاط كادر الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:"
             )
         except Exception as e:
-            logger.error(f"خطأ في معالجة الفيديو: {e}")
+            logger.error(f"خطأ في الفيديو: {e}")
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
-    # 7. استقبال المستندات (فيديوهات ملفات أو كتب PDF)
+    # 7. مستندات (PDF وفيديوهات مرسلة كملفات - مهما بلغ الحجم)
     if msg.document:
         doc = msg.document
         mime = (doc.mime_type or "").lower()
         file_name = (doc.file_name or "").lower()
         video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.rmvb', '.flv', '.3gp')
 
-        # أ- ملف فيديو مرسل كمستند
+        # أ- فيديو كمستند
         if mime.startswith("video/") or file_name.endswith(video_extensions):
             context.user_data.clear()
-            status_msg = await msg.reply_text("⏳ جاري معالجة ملف الفيديو واستخراج الكادر...")
+            status_msg = await msg.reply_text("⏳ جاري سحب كادر ملف الفيديو...")
             frame_bytes = None
             try:
                 if doc.thumbnail:
                     thumb_file = await context.bot.get_file(doc.thumbnail.file_id)
                     frame_bytes = await thumb_file.download_as_bytearray()
 
-                if not frame_bytes and (doc.file_size or 0) < 20 * 1024 * 1024:
-                    tg_file = await context.bot.get_file(doc.file_id)
-                    ext = os.path.splitext(file_name)[1] or ".mp4"
-                    temp_path = f"temp_doc_{doc.file_id[:8]}{ext}"
-                    await tg_file.download_to_drive(temp_path)
-                    frame_bytes = extract_video_frame(temp_path)
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
+                if not frame_bytes:
+                    raw_data = await download_large_file_telethon(msg.chat_id, msg.message_id)
+                    if raw_data:
+                        ext = os.path.splitext(file_name)[1] or ".mp4"
+                        temp_path = f"temp_doc_{msg.message_id}{ext}"
+                        with open(temp_path, "wb") as f:
+                            f.write(raw_data)
+                        frame_bytes = extract_video_frame(temp_path)
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
 
                 if not frame_bytes:
-                    await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو لكبر حجم الملف بدون غلاف مصغر.")
+                    await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو.")
                     return
 
                 context.user_data["temp_media_type"] = "video_doc"
@@ -716,27 +738,28 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     caption="✍️ <b>تم استخراج كادر ملف الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص به؟\nتفضل بإرسال النص الآن:"
                 )
             except Exception as e:
-                logger.error(f"خطأ في معالجة ملف الفيديو: {e}")
+                logger.error(f"خطأ في ملف الفيديو: {e}")
                 await status_msg.edit_text(f"❌ تعذر معالجة ملف الفيديو: {e}")
             return
 
-        # ب- كتاب PDF
+        # ب- كتاب PDF مهما كبر حجمه
         elif mime == "application/pdf" or file_name.endswith('.pdf'):
             context.user_data.clear()
-            status_msg = await msg.reply_text("⏳ جاري استخراج الصفحة الأولى لغلاف الكتاب...")
+            status_msg = await msg.reply_text("⏳ جاري سحب غلاف الكتاب عبر بروتوكول تيليجرام السريع...")
             cover_bytes = None
             try:
                 if doc.thumbnail:
                     thumb_file = await context.bot.get_file(doc.thumbnail.file_id)
                     cover_bytes = await thumb_file.download_as_bytearray()
                 
-                if not cover_bytes and (doc.file_size or 0) < 20 * 1024 * 1024:
-                    tg_file = await context.bot.get_file(doc.file_id)
-                    pdf_bytes = await tg_file.download_as_bytearray()
-                    cover_bytes = extract_pdf_cover(pdf_bytes)
+                if not cover_bytes:
+                    # سحب الملف كاملاً عبر Telethon وتجاوز حاجز الـ 20MB
+                    pdf_bytes = await download_large_file_telethon(msg.chat_id, msg.message_id)
+                    if pdf_bytes:
+                        cover_bytes = extract_pdf_cover(pdf_bytes)
 
                 if not cover_bytes:
-                    await status_msg.edit_text("❌ تعذر سحب غلاف الـ PDF من تيليجرام.")
+                    await status_msg.edit_text("❌ تعذر استخراج غلاف الـ PDF.")
                     return
 
                 context.user_data["temp_media_type"] = "pdf"
@@ -752,11 +775,11 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
                 )
             except Exception as e:
-                logger.error(f"خطأ في استخراج غلاف الـ PDF: {e}")
+                logger.error(f"خطأ غلاف PDF: {e}")
                 await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
             return
 
-    # 8. استقبال صورة أو بوستر
+    # 8. صورة أو تصميم
     if msg.photo:
         context.user_data.clear()
         photo_obj = msg.photo[-1]
@@ -771,7 +794,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✍️ <b>تم استلام التصميم الدعوي.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا المنشور؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 9. إدخال الكابشن يدوياً من المشرف بعد طلبه
+    # 9. إدخال الكابشن يدوياً من المشرف
     if context.user_data.get("awaiting_custom_caption") and msg.text:
         custom_caption = msg.text.strip()
         pending_type = context.user_data.get("temp_media_type")
@@ -819,7 +842,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return
 
-# ----------------- معالجة الأزرار التفاعلية والنشر في القناة -----------------
+# ----------------- معالجة الأزرار والنشر -----------------
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -850,8 +873,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         encoded_caption = urllib.parse.quote(pending["caption"])
 
-        # توزيع الأزرار لواجهات أندرويد المعربة (RTL):
-        # 1. المواد الصوتية:
+        # توزيع الأزرار RTL (اليمين للمادة واليسار للتعليق)
         if pending["media_type"] in ["audio", "voice"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=listen_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
@@ -864,7 +886,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
             ])
 
-        # 2. مقاطع الفيديو:
         elif pending["media_type"] in ["video", "video_doc"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=watch_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
@@ -877,7 +898,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
             ])
 
-        # 3. ملفات الـ PDF أو الصور (صف واحد):
         else:
             channel_markup = InlineKeyboardMarkup([
                 [
@@ -899,24 +919,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(f"✅ تم النشر في القناة بنجاح بالأزرار المتفق عليها!\nرقم المنشور: <code>{pub_id}</code>", parse_mode="HTML")
             context.user_data["pending_pub"] = None
         except Exception as e:
-            logger.error(f"خطأ في النشر بالقناة: {e}")
+            logger.error(f"خطأ في النشر: {e}")
             await query.message.reply_text(f"❌ تعذر النشر في القناة: {e}")
 
 # ----------------- الدالة الرئيسية -----------------
+async def post_init(application):
+    await telethon_client.start(bot_token=BOT_TOKEN)
+    logger.info("تم تشغيل عميل Telethon MTProto بنجاح.")
+
 def main():
     server_thread = threading.Thread(target=run_http_server, daemon=True)
     server_thread.start()
 
     init_db()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_media))
 
-    logger.info("تم بدء استماع البوت رسمياً (Long Polling)...")
+    logger.info("تم بدء استماع البوت رسمياً...")
     app.run_polling()
 
 if __name__ == "__main__":
