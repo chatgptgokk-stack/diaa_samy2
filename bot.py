@@ -381,14 +381,17 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_me = await context.bot.get_me()
 
+    # الترتيب معدل هندسياً ليظهر في تيليجرام باللغة العربية (RTL):
+    # اليمين: الخطب | اليسار: الفيديوهات
+    # اليمين: الكتب | اليسار: البحث
     keyboard = [
         [
-            InlineKeyboardButton("🎙 الخطب", url=f"https://t.me/{bot_me.username}?start=lectures"),
             InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
+            InlineKeyboardButton("🎙 الخطب", url=f"https://t.me/{bot_me.username}?start=lectures"),
         ],
         [
-            InlineKeyboardButton("📚 الكتب", url=f"https://t.me/{bot_me.username}?start=books"),
             InlineKeyboardButton("🔎 البحث", url=f"https://t.me/{bot_me.username}?start=search"),
+            InlineKeyboardButton("📚 الكتب", url=f"https://t.me/{bot_me.username}?start=books"),
         ],
         [
             InlineKeyboardButton("📩 اسأل الشيخ", url=f"https://t.me/{bot_me.username}?start=ask_admin")
@@ -417,8 +420,8 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     msg = update.message
 
-    # 1. استلام سؤال خاص للشيخ
-    if context.user_data.get("awaiting_question") and user.id != ADMIN_USER_ID:
+    # 1. استلام سؤال خاص للشيخ (متاح للجميع وللأدمن أثناء التجربة)
+    if context.user_data.get("awaiting_question"):
         context.user_data["awaiting_question"] = False
         clean_name = html.escape(user.full_name or "بدون اسم")
         uname = f"@{user.username}" if user.username else "بدون معرف"
@@ -443,8 +446,8 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيجيب عليه الشيخ قريباً بإذن الله.")
         return
 
-    # 2. استلام تعليق العضو حول مادة محددة
-    if context.user_data.get("awaiting_material_comment") and user.id != ADMIN_USER_ID:
+    # 2. استلام تعليق العضو حول مادة محددة (متاح للجميع وللأدمن أثناء التجربة)
+    if context.user_data.get("awaiting_material_comment"):
         pub_id = context.user_data["awaiting_material_comment"]
         context.user_data["awaiting_material_comment"] = None
 
@@ -496,7 +499,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["answering_user_id"] = None
         return
 
-    # التحقق من صلاحية الإدارة
+    # التحقق من صلاحية الإدارة للعمليات التالية
     if user.id != ADMIN_USER_ID:
         return
 
@@ -624,7 +627,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 photo_file.name = "cover.jpg"
                 await msg.reply_photo(
                     photo=photo_file,
-                    caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
+                    caption="✍️️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
                 )
             except Exception as e:
                 logger.error(f"خطأ في استخراج غلاف الـ PDF: {e}")
@@ -725,39 +728,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         encoded_caption = urllib.parse.quote(pending["caption"])
 
-        # توزيع الأزرار المعتمد لواجهات RTL:
-        # 1. المواد الصوتية:
+        # توزيع الأزرار لواجهات أندرويد المعربة (RTL):
+        # في تيليجرام المعرب: العنصر الثاني يظهر جهة اليمين، والعنصر الأول يظهر جهة اليسار
+        # 1. المواد الصوتية: اليمين (الاستماع) | اليسار (سجل تعليقك)
         if pending["media_type"] in ["audio", "voice"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=listen_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🎧 الاستماع إلى المادة", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}"),
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
+                    InlineKeyboardButton("🎧 الاستماع إلى المادة", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}")
                 ],
                 [
                     InlineKeyboardButton("📢 انشر تؤجر", url=share_url)
                 ]
             ])
 
-        # 2. مقاطع الفيديو:
+        # 2. مقاطع الفيديو: اليمين (مشاهدة الفيديو) | اليسار (سجل تعليقك)
         elif pending["media_type"] in ["video", "video_doc"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=watch_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("▶️ مشاهدة الفيديو", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}"),
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
+                    InlineKeyboardButton("▶️ مشاهدة الفيديو", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}")
                 ],
                 [
                     InlineKeyboardButton("📢 انشر تؤجر", url=share_url)
                 ]
             ])
 
-        # 3. ملفات الـ PDF أو الصور (صف واحد):
+        # 3. ملفات الـ PDF أو الصور: اليمين (فتح / تنزيل الملف) | اليسار (سجل تعليقك)
         else:
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("📥 فتح / تنزيل الملف", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}"),
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
+                    InlineKeyboardButton("📥 فتح / تنزيل الملف", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}")
                 ]
             ])
 
