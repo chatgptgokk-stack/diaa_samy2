@@ -12,8 +12,6 @@ from psycopg2 import pool
 import fitz  # PyMuPDF
 import cv2
 from PIL import Image, ImageDraw, ImageFont
-import arabic_reshaper
-from bidi.algorithm import get_display
 
 from telegram import (
     Update,
@@ -214,16 +212,6 @@ def split_arabic_text(text: str, max_chars_per_line: int = 28) -> list:
         lines.append(" ".join(current_line))
     return lines
 
-def format_arabic_line(line: str) -> str:
-    configuration = {
-        'delete_harakat': False,
-        'support_ligatures': True,
-        'RIAL': True
-    }
-    reshaper = arabic_reshaper.ArabicReshaper(configuration=configuration)
-    reshaped_text = reshaper.reshape(line)
-    return get_display(reshaped_text)
-
 def create_audio_poster(title_text: str) -> bytes:
     ensure_arabic_font()
     width, height = 1080, 1080
@@ -246,19 +234,25 @@ def create_audio_poster(title_text: str) -> bytes:
         footer_font = title_font
 
     raw_lines = split_arabic_text(title_text, max_chars_per_line=26)
-    processed_lines = [format_arabic_line(l) for l in raw_lines]
 
     line_spacing = 25
     line_height = 65
-    total_text_height = len(processed_lines) * line_height + (len(processed_lines) - 1) * line_spacing
+    total_text_height = len(raw_lines) * line_height + (len(raw_lines) - 1) * line_spacing
     start_y = (height - total_text_height) // 2
 
-    for i, line in enumerate(processed_lines):
+    # الرسم المباشر باتجاه RTL باستخدام محرك الخط الأصيل (Amiri)
+    for i, line in enumerate(raw_lines):
         y = start_y + i * (line_height + line_spacing)
-        draw.text((width // 2, y), line, fill=(245, 245, 245), font=title_font, anchor="mm")
+        try:
+            draw.text((width // 2, y), line, fill=(245, 245, 245), font=title_font, anchor="mm", direction="rtl")
+        except TypeError:
+            draw.text((width // 2, y), line, fill=(245, 245, 245), font=title_font, anchor="mm")
 
-    footer_text = format_arabic_line("منصة القناة الرسمية")
-    draw.text((width // 2, height - 120), footer_text, fill=(212, 175, 55), font=footer_font, anchor="mm")
+    footer_text = "منصة القناة الرسمية"
+    try:
+        draw.text((width // 2, height - 120), footer_text, fill=(212, 175, 55), font=footer_font, anchor="mm", direction="rtl")
+    except TypeError:
+        draw.text((width // 2, height - 120), footer_text, fill=(212, 175, 55), font=footer_font, anchor="mm")
 
     out_buffer = io.BytesIO()
     image.save(out_buffer, format="JPEG", quality=95)
@@ -276,7 +270,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• لتحديث لوحة الأزرار في القناة: أرسل الأمر /menu.\n"
                 "• إرسال صوتيات: تصميم إسلامي ملكي بعد كتابة الكابشن بيدك.\n"
                 "• إرسال فيديو: كادر نقي طبيعي مع طلب الكابشن يدوياً.\n"
-                "• إرسال PDF: استخراج الغلاف التلقائي حتى للملفات الكبيرة مع طلب الكابشن.\n"
+                "• إرسال PDF: استخراج الغلاف التلقائي لصفحة الكتاب الأولى حصراً.\n"
                 "• إرسال صورة / بوستر: نشر دعوي مباشر مع طلب الكابشن."
             )
             await update.message.reply_text(admin_panel)
@@ -386,6 +380,10 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_me = await context.bot.get_me()
 
+    # لوحة القناة المتفق عليها بالضبط:
+    # الصف الأول: الخطب | الفيديوهات
+    # الصف الثاني: الكتب | البحث
+    # الصف الثالث (عريض): اسأل الشيخ
     keyboard = [
         [
             InlineKeyboardButton("🎙 الخطب", url=f"https://t.me/{bot_me.username}?start=lectures"),
@@ -579,26 +577,25 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
-    # 7. استقبال كتاب PDF وتجاوز قيد الحجم عبر الغلاف المصغر
+    # 7. استقبال كتاب PDF واستخراج الصفحة الأولى حصراً
     elif msg.document and msg.document.mime_type == "application/pdf":
-        status_msg = await msg.reply_text("⏳ جاري استخراج غلاف الكتاب...")
+        status_msg = await msg.reply_text("⏳ جاري استخراج الصفحة الأولى لغلاف الكتاب...")
         cover_bytes = None
         try:
-            # الحل الجذري لتجاوز قيد الـ 20MB: تنزيل الصورة المصغرة الجاهزة للملف مباشرة
+            # 1. جلب الصورة المصغرة المرفقة تلقائياً من تيليجرام للصفحة الأولى (لتجاوز أي قيد حجم)
             if msg.document.thumbnail:
                 thumb_file = await context.bot.get_file(msg.document.thumbnail.file_id)
                 cover_bytes = await thumb_file.download_as_bytearray()
             
-            # إذا لم يوفر تيليجرام صورة مصغرة وكان حجم الملف مسموحاً
+            # 2. إذا لم تكن متوفرة وكان الملف في حدود التحميل المسموح (أقل من 20MB)
             if not cover_bytes and (msg.document.file_size or 0) < 20 * 1024 * 1024:
                 tg_file = await context.bot.get_file(msg.document.file_id)
                 pdf_bytes = await tg_file.download_as_bytearray()
                 cover_bytes = extract_pdf_cover(pdf_bytes)
 
-            # خيار احتياطي في حال غياب الغلاف: تصميم كارت إسلامي يحمل اسم الملف
             if not cover_bytes:
-                clean_filename = os.path.splitext(msg.document.file_name or "كتاب إلكتروني")[0].replace("_", " ")
-                cover_bytes = create_audio_poster(clean_filename)
+                await status_msg.edit_text("❌ تعذر سحب الصفحة الأولى للملف من تيليجرام. يرجى التأكد من أن الملف سليم بصيغة PDF.")
+                return
 
             context.user_data["temp_media_type"] = "pdf"
             context.user_data["temp_file_id"] = msg.document.file_id
@@ -606,7 +603,10 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["awaiting_custom_caption"] = True
 
             await status_msg.delete()
-            await msg.reply_text("✍️ <b>تم استخراج غلاف الكتاب بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن التعريفي للكتاب؟\nتفضل بإرسال النص الآن:")
+            await msg.reply_photo(
+                photo=cover_bytes,
+                caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
+            )
         except Exception as e:
             await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
         return
