@@ -124,6 +124,30 @@ def get_publication(pub_id):
     conn.close()
     return row
 
+def get_publications_by_type(media_types: tuple, limit=10):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, caption FROM publications WHERE media_type IN %s ORDER BY id DESC LIMIT %s;",
+        (media_types, limit)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def search_publications(query_str: str, limit=10):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, media_type, caption FROM publications WHERE caption ILIKE %s ORDER BY id DESC LIMIT %s;",
+        (f"%{query_str}%", limit)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
 def log_event(pub_id, action_type, user):
     try:
         conn = get_db_connection()
@@ -260,6 +284,7 @@ def create_audio_poster(title_text: str) -> bytes:
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
+    bot_me = await context.bot.get_me()
 
     if not args:
         if user.id == ADMIN_USER_ID:
@@ -278,17 +303,84 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     payload = args[0]
 
-    # خدمة إسأل الشيخ
+    # 1. قسم الخطب والمحاضرات الصوتية
+    if payload == "lectures":
+        rows = get_publications_by_type(("audio", "voice"), limit=10)
+        if not rows:
+            await update.message.reply_text("🎙 <b>قسم الخطب والمحاضرات:</b>\n\nلا توجد خطب منشورة حالياً في الأرشيف.", parse_mode="HTML")
+            return
+        
+        keyboard = []
+        for pub_id, caption in rows:
+            title = (caption.split("\n")[0])[:35] if caption else f"مقطع صوتي رقم {pub_id}"
+            keyboard.append([InlineKeyboardButton(f"🎧 {title}", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}")])
+            
+        await update.message.reply_text(
+            "🎙 <b>أرشيف الخطب والمحاضرات الصوتية:</b>\n\nتفضل باختيار المادة للاستماع إليها مباشرة:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        return
+
+    # 2. قسم المرئيات والفيديوهات
+    if payload == "videos":
+        rows = get_publications_by_type(("video", "video_doc"), limit=10)
+        if not rows:
+            await update.message.reply_text("🎬 <b>قسم الفيديوهات:</b>\n\nلا توجد مقاطع فيديو منشورة حالياً في الأرشيف.", parse_mode="HTML")
+            return
+
+        keyboard = []
+        for pub_id, caption in rows:
+            title = (caption.split("\n")[0])[:35] if caption else f"فيديو رقم {pub_id}"
+            keyboard.append([InlineKeyboardButton(f"▶️ {title}", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}")])
+
+        await update.message.reply_text(
+            "🎬 <b>أرشيف المرئيات والفيديوهات:</b>\n\nتفضل باختيار المقطع لمشاهدته مباشرة:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        return
+
+    # 3. قسم الكتب والمؤلفات
+    if payload == "books":
+        rows = get_publications_by_type(("pdf",), limit=10)
+        if not rows:
+            await update.message.reply_text("📚 <b>قسم الكتب والمؤلفات:</b>\n\nلا توجد كتب مضافة حالياً في الأرشيف.", parse_mode="HTML")
+            return
+
+        keyboard = []
+        for pub_id, caption in rows:
+            title = (caption.split("\n")[0])[:35] if caption else f"كتاب رقم {pub_id}"
+            keyboard.append([InlineKeyboardButton(f"📖 {title}", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}")])
+
+        await update.message.reply_text(
+            "📚 <b>مكتبة الكتب والمطبوعات:</b>\n\nتفضل باختيار الكتاب لتنزيله وتصفحه:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        return
+
+    # 4. خدمة البحث في المحتوى
+    if payload == "search":
+        context.user_data["awaiting_search_query"] = True
+        await update.message.reply_text(
+            "🔎 <b>البحث في محتوى القناة:</b>\n\n"
+            "تفضل بكتابة الكلمة أو العنوان الذي تبحث عنه الآن:",
+            parse_mode="HTML"
+        )
+        return
+
+    # 5. خدمة إسأل الشيخ
     if payload == "ask_admin":
+        context.user_data["awaiting_question"] = True
         await update.message.reply_text(
             "🔒 مرحباً بك في خدمة (إسأل الشيخ) الخاصة:\n\n"
             "هذه المحادثة سرية ومشفرة تماماً بينك وبين الشيخ.\n"
             "تفضل بكتابة سؤالك الآن نصياً أو سجّل مقطعاً صوتياً (🎙):"
         )
-        context.user_data["awaiting_question"] = True
         return
 
-    # خدمة سجل تعليقك
+    # 6. خدمة سجل تعليقك
     if payload.startswith("comment_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -308,7 +400,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # استماع لتسجيل صوتي
+    # 7. استماع لتسجيل صوتي
     if payload.startswith("listen_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -330,7 +422,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_audio(audio=file_id, caption=cap or "", parse_mode="HTML")
 
-    # فتح / تحميل ملف أو صورة
+    # 8. فتح / تحميل كتاب PDF أو صورة
     elif payload.startswith("doc_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -352,7 +444,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_document(document=file_id, caption=cap or "", parse_mode="HTML")
 
-    # مشاهدة مقطع فيديو
+    # 9. مشاهدة مقطع فيديو
     elif payload.startswith("watch_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -382,8 +474,6 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_me = await context.bot.get_me()
 
     # الترتيب معدل هندسياً ليظهر في تيليجرام باللغة العربية (RTL):
-    # اليمين: الخطب | اليسار: الفيديوهات
-    # اليمين: الكتب | اليسار: البحث
     keyboard = [
         [
             InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
@@ -419,8 +509,40 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
+    bot_me = await context.bot.get_me()
 
-    # 1. استلام سؤال خاص للشيخ (متاح للجميع وللأدمن أثناء التجربة)
+    # 1. تنفيذ البحث عند كتابة المستخدم لكلمة البحث
+    if context.user_data.get("awaiting_search_query") and msg.text:
+        context.user_data["awaiting_search_query"] = False
+        search_kw = msg.text.strip()
+        results = search_publications(search_kw, limit=10)
+        
+        if not results:
+            await msg.reply_text(f"🔍 لم يتم العثور على أي مواد مطابقة لكلمة: <b>«{html.escape(search_kw)}»</b>", parse_mode="HTML")
+            return
+
+        keyboard = []
+        for pub_id, m_type, cap in results:
+            title = (cap.split("\n")[0])[:30] if cap else f"مادة رقم {pub_id}"
+            if m_type in ["audio", "voice"]:
+                btn_url = f"https://t.me/{bot_me.username}?start=listen_{pub_id}"
+                icon = "🎧"
+            elif m_type in ["video", "video_doc"]:
+                btn_url = f"https://t.me/{bot_me.username}?start=watch_{pub_id}"
+                icon = "🎬"
+            else:
+                btn_url = f"https://t.me/{bot_me.username}?start=doc_{pub_id}"
+                icon = "📥"
+            keyboard.append([InlineKeyboardButton(f"{icon} {title}", url=btn_url)])
+
+        await msg.reply_text(
+            f"🔍 <b>نتائج البحث عن «{html.escape(search_kw)}»:</b>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        return
+
+    # 2. استلام سؤال خاص للشيخ (متاح للجميع وللأدمن أثناء التجربة)
     if context.user_data.get("awaiting_question"):
         context.user_data["awaiting_question"] = False
         clean_name = html.escape(user.full_name or "بدون اسم")
@@ -446,7 +568,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيجيب عليه الشيخ قريباً بإذن الله.")
         return
 
-    # 2. استلام تعليق العضو حول مادة محددة (متاح للجميع وللأدمن أثناء التجربة)
+    # 3. استلام تعليق العضو حول مادة محددة (متاح للجميع وللأدمن)
     if context.user_data.get("awaiting_material_comment"):
         pub_id = context.user_data["awaiting_material_comment"]
         context.user_data["awaiting_material_comment"] = None
@@ -475,7 +597,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ شكراً لك، تم تسجيل تعليقك وإرساله للإدارة بنجاح.")
         return
 
-    # 3. إرسال رد المشرف للسائل أو المعلق
+    # 4. إرسال رد المشرف للسائل أو المعلق
     if user.id == ADMIN_USER_ID and context.user_data.get("answering_user_id"):
         target_id = context.user_data["answering_user_id"]
         try:
@@ -503,7 +625,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id != ADMIN_USER_ID:
         return
 
-    # 4. استقبال ملف صوتي جديد (تصفير أي انتظار سابق فوراً)
+    # 5. استقبال ملف صوتي جديد (تصفير أي انتظار سابق فوراً)
     if msg.audio or msg.voice:
         context.user_data.clear()
         context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
@@ -512,7 +634,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 5. استقبال مقطع فيديو مباشر
+    # 6. استقبال مقطع فيديو مباشر
     if msg.video:
         context.user_data.clear()
         status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
@@ -551,7 +673,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
-    # 6. استقبال المستندات (فيديوهات ملفات أو كتب PDF)
+    # 7. استقبال المستندات (فيديوهات ملفات أو كتب PDF)
     if msg.document:
         doc = msg.document
         mime = (doc.mime_type or "").lower()
@@ -627,14 +749,14 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 photo_file.name = "cover.jpg"
                 await msg.reply_photo(
                     photo=photo_file,
-                    caption="✍️️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
+                    caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
                 )
             except Exception as e:
                 logger.error(f"خطأ في استخراج غلاف الـ PDF: {e}")
                 await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
             return
 
-    # 7. استقبال صورة أو بوستر
+    # 8. استقبال صورة أو بوستر
     if msg.photo:
         context.user_data.clear()
         photo_obj = msg.photo[-1]
@@ -649,7 +771,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✍️ <b>تم استلام التصميم الدعوي.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا المنشور؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 8. إدخال الكابشن يدوياً من المشرف بعد طلبه
+    # 9. إدخال الكابشن يدوياً من المشرف بعد طلبه
     if context.user_data.get("awaiting_custom_caption") and msg.text:
         custom_caption = msg.text.strip()
         pending_type = context.user_data.get("temp_media_type")
@@ -729,8 +851,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         encoded_caption = urllib.parse.quote(pending["caption"])
 
         # توزيع الأزرار لواجهات أندرويد المعربة (RTL):
-        # في تيليجرام المعرب: العنصر الثاني يظهر جهة اليمين، والعنصر الأول يظهر جهة اليسار
-        # 1. المواد الصوتية: اليمين (الاستماع) | اليسار (سجل تعليقك)
+        # 1. المواد الصوتية:
         if pending["media_type"] in ["audio", "voice"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=listen_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
@@ -743,7 +864,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
             ])
 
-        # 2. مقاطع الفيديو: اليمين (مشاهدة الفيديو) | اليسار (سجل تعليقك)
+        # 2. مقاطع الفيديو:
         elif pending["media_type"] in ["video", "video_doc"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=watch_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
@@ -756,7 +877,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
             ])
 
-        # 3. ملفات الـ PDF أو الصور: اليمين (فتح / تنزيل الملف) | اليسار (سجل تعليقك)
+        # 3. ملفات الـ PDF أو الصور (صف واحد):
         else:
             channel_markup = InlineKeyboardMarkup([
                 [
