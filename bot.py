@@ -179,7 +179,6 @@ def extract_pdf_cover(pdf_bytes: bytes) -> bytes:
     return img_data
 
 def extract_video_frame(video_path: str) -> bytes:
-    """استخراج كادر نقي بأبعاده الأصلية دون أي تشويه أو مط"""
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_MSEC, 2000)
     success, frame = cap.read()
@@ -218,7 +217,6 @@ def create_audio_poster(title_text: str) -> bytes:
     image = Image.new("RGB", (width, height), color=(18, 30, 49))
     draw = ImageDraw.Draw(image)
 
-    # زخارف إسلامية ذهبية ملكية
     draw.rectangle([45, 45, width - 45, height - 45], outline=(212, 175, 55), width=7)
     draw.rectangle([65, 65, width - 65, height - 65], outline=(160, 130, 40), width=2)
 
@@ -240,7 +238,6 @@ def create_audio_poster(title_text: str) -> bytes:
     total_text_height = len(raw_lines) * line_height + (len(raw_lines) - 1) * line_spacing
     start_y = (height - total_text_height) // 2
 
-    # الرسم المباشر باتجاه RTL باستخدام محرك الخط الأصيل (Amiri)
     for i, line in enumerate(raw_lines):
         y = start_y + i * (line_height + line_spacing)
         try:
@@ -269,8 +266,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "👋 مرحباً بك يا مدير القناة في لوحة التحكم الإدارية:\n\n"
                 "• لتحديث لوحة الأزرار في القناة: أرسل الأمر /menu.\n"
                 "• إرسال صوتيات: تصميم إسلامي ملكي بعد كتابة الكابشن بيدك.\n"
-                "• إرسال فيديو: كادر نقي طبيعي مع طلب الكابشن يدوياً.\n"
-                "• إرسال PDF: استخراج الغلاف التلقائي لصفحة الكتاب الأولى حصراً.\n"
+                "• إرسال فيديو (مباشر أو كملف): كادر نقي مع طلب الكابشن.\n"
+                "• إرسال PDF: استخراج صفحة الغلاف مع طلب الكابشن.\n"
                 "• إرسال صورة / بوستر: نشر دعوي مباشر مع طلب الكابشن."
             )
             await update.message.reply_text(admin_panel)
@@ -370,8 +367,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("عذراً، هذا الفيديو غير متاح.")
             return
 
-        _, file_id, _, cap = pub
-        await update.message.reply_video(video=file_id, caption=cap or "", parse_mode="HTML")
+        media_type, file_id, _, cap = pub
+        if media_type == "video_doc":
+            await update.message.reply_document(document=file_id, caption=cap or "", parse_mode="HTML")
+        else:
+            await update.message.reply_video(video=file_id, caption=cap or "", parse_mode="HTML")
 
 # ----------------- نشر وتحديث لوحة /menu في القناة -----------------
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -380,18 +380,18 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_me = await context.bot.get_me()
 
-    # لوحة القناة المتفق عليها بالضبط:
-    # الصف الأول: الخطب | الفيديوهات
-    # الصف الثاني: الكتب | البحث
-    # الصف الثالث (عريض): اسأل الشيخ
+    # الترتيب معدل هندسياً ليظهر في تيليجرام باللغة العربية:
+    # الصف الأول: الخطب (يمين) | الفيديوهات (يسار)
+    # الصف الثاني: الكتب (يمين) | البحث (يسار)
+    # الصف الثالث عريض: اسأل الشيخ
     keyboard = [
         [
-            InlineKeyboardButton("🎙 الخطب", url=f"https://t.me/{bot_me.username}?start=lectures"),
             InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
+            InlineKeyboardButton("🎙 الخطب", url=f"https://t.me/{bot_me.username}?start=lectures"),
         ],
         [
-            InlineKeyboardButton("📚 الكتب", url=f"https://t.me/{bot_me.username}?start=books"),
             InlineKeyboardButton("🔎 البحث", url=f"https://t.me/{bot_me.username}?start=search"),
+            InlineKeyboardButton("📚 الكتب", url=f"https://t.me/{bot_me.username}?start=books"),
         ],
         [
             InlineKeyboardButton("📩 اسأل الشيخ", url=f"https://t.me/{bot_me.username}?start=ask_admin")
@@ -529,7 +529,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="HTML"
             )
 
-        elif pending_type in ["video", "pdf", "image"]:
+        elif pending_type in ["video", "video_doc", "pdf", "image"]:
             cover_bytes = context.user_data.get("temp_cover_bytes")
             context.user_data["pending_pub"] = {
                 "media_type": pending_type,
@@ -555,16 +555,26 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 6. استقبال مقطع الفيديو
+    # 6. استقبال مقطع الفيديو المباشر
     elif msg.video:
         status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
+        frame_bytes = None
         try:
-            tg_file = await context.bot.get_file(msg.video.file_id)
-            temp_path = f"temp_vid_{msg.video.file_id[:8]}.mp4"
-            await tg_file.download_to_drive(temp_path)
-            frame_bytes = extract_video_frame(temp_path)
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            if msg.video.thumbnail:
+                thumb_file = await context.bot.get_file(msg.video.thumbnail.file_id)
+                frame_bytes = await thumb_file.download_as_bytearray()
+
+            if not frame_bytes and (msg.video.file_size or 0) < 20 * 1024 * 1024:
+                tg_file = await context.bot.get_file(msg.video.file_id)
+                temp_path = f"temp_vid_{msg.video.file_id[:8]}.mp4"
+                await tg_file.download_to_drive(temp_path)
+                frame_bytes = extract_video_frame(temp_path)
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+            if not frame_bytes:
+                await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو، يرجى إرسال صورة كغلاف للفيديو أولاً.")
+                return
 
             context.user_data["temp_media_type"] = "video"
             context.user_data["temp_file_id"] = msg.video.file_id
@@ -572,44 +582,88 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["awaiting_custom_caption"] = True
 
             await status_msg.delete()
-            await msg.reply_text("✍️ <b>تم التقاط الكادر الطبيعي بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:")
+            await msg.reply_photo(
+                photo=frame_bytes,
+                caption="✍️ <b>تم التقاط كادر الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:"
+            )
         except Exception as e:
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
-    # 7. استقبال كتاب PDF واستخراج الصفحة الأولى حصراً
-    elif msg.document and msg.document.mime_type == "application/pdf":
-        status_msg = await msg.reply_text("⏳ جاري استخراج الصفحة الأولى لغلاف الكتاب...")
-        cover_bytes = None
-        try:
-            # 1. جلب الصورة المصغرة المرفقة تلقائياً من تيليجرام للصفحة الأولى (لتجاوز أي قيد حجم)
-            if msg.document.thumbnail:
-                thumb_file = await context.bot.get_file(msg.document.thumbnail.file_id)
-                cover_bytes = await thumb_file.download_as_bytearray()
-            
-            # 2. إذا لم تكن متوفرة وكان الملف في حدود التحميل المسموح (أقل من 20MB)
-            if not cover_bytes and (msg.document.file_size or 0) < 20 * 1024 * 1024:
-                tg_file = await context.bot.get_file(msg.document.file_id)
-                pdf_bytes = await tg_file.download_as_bytearray()
-                cover_bytes = extract_pdf_cover(pdf_bytes)
+    # 7. معالجة المستندات (PDF أو فيديوهات مرسلة كملفات)
+    elif msg.document:
+        doc = msg.document
+        mime = (doc.mime_type or "").lower()
+        file_name = (doc.file_name or "").lower()
+        video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.rmvb', '.flv', '.3gp')
 
-            if not cover_bytes:
-                await status_msg.edit_text("❌ تعذر سحب الصفحة الأولى للملف من تيليجرام. يرجى التأكد من أن الملف سليم بصيغة PDF.")
-                return
+        # أ- إذا كان المستند ملف فيديو بجميع صيغه
+        if mime.startswith("video/") or file_name.endswith(video_extensions):
+            status_msg = await msg.reply_text("⏳ جاري معالجة ملف الفيديو واستخراج الكادر...")
+            frame_bytes = None
+            try:
+                if doc.thumbnail:
+                    thumb_file = await context.bot.get_file(doc.thumbnail.file_id)
+                    frame_bytes = await thumb_file.download_as_bytearray()
 
-            context.user_data["temp_media_type"] = "pdf"
-            context.user_data["temp_file_id"] = msg.document.file_id
-            context.user_data["temp_cover_bytes"] = cover_bytes
-            context.user_data["awaiting_custom_caption"] = True
+                if not frame_bytes and (doc.file_size or 0) < 20 * 1024 * 1024:
+                    tg_file = await context.bot.get_file(doc.file_id)
+                    ext = os.path.splitext(file_name)[1] or ".mp4"
+                    temp_path = f"temp_doc_{doc.file_id[:8]}{ext}"
+                    await tg_file.download_to_drive(temp_path)
+                    frame_bytes = extract_video_frame(temp_path)
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
 
-            await status_msg.delete()
-            await msg.reply_photo(
-                photo=cover_bytes,
-                caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
-            )
-        except Exception as e:
-            await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
-        return
+                if not frame_bytes:
+                    await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو نظراً لكبر حجم الملف بدون غلاف مصغر.")
+                    return
+
+                context.user_data["temp_media_type"] = "video_doc"
+                context.user_data["temp_file_id"] = doc.file_id
+                context.user_data["temp_cover_bytes"] = frame_bytes
+                context.user_data["awaiting_custom_caption"] = True
+
+                await status_msg.delete()
+                await msg.reply_photo(
+                    photo=frame_bytes,
+                    caption="✍️ <b>تم استخراج كادر ملف الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص به؟\nتفضل بإرسال النص الآن:"
+                )
+            except Exception as e:
+                await status_msg.edit_text(f"❌ تعذر معالجة ملف الفيديو: {e}")
+            return
+
+        # ب- إذا كان المستند كتاب PDF
+        elif mime == "application/pdf" or file_name.endswith('.pdf'):
+            status_msg = await msg.reply_text("⏳ جاري استخراج الصفحة الأولى لغلاف الكتاب...")
+            cover_bytes = None
+            try:
+                if doc.thumbnail:
+                    thumb_file = await context.bot.get_file(doc.thumbnail.file_id)
+                    cover_bytes = await thumb_file.download_as_bytearray()
+                
+                if not cover_bytes and (doc.file_size or 0) < 20 * 1024 * 1024:
+                    tg_file = await context.bot.get_file(doc.file_id)
+                    pdf_bytes = await tg_file.download_as_bytearray()
+                    cover_bytes = extract_pdf_cover(pdf_bytes)
+
+                if not cover_bytes:
+                    await status_msg.edit_text("❌ تعذر سحب غلاف الـ PDF من تيليجرام.")
+                    return
+
+                context.user_data["temp_media_type"] = "pdf"
+                context.user_data["temp_file_id"] = doc.file_id
+                context.user_data["temp_cover_bytes"] = cover_bytes
+                context.user_data["awaiting_custom_caption"] = True
+
+                await status_msg.delete()
+                await msg.reply_photo(
+                    photo=cover_bytes,
+                    caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
+                )
+            except Exception as e:
+                await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
+            return
 
     # 8. استقبال صورة أو بوستر
     elif msg.photo:
@@ -656,39 +710,39 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         encoded_caption = urllib.parse.quote(pending["caption"])
 
-        # توزيع الأزرار المعتمد بحسب نوع المادة:
-        # 1. المواد الصوتية:
+        # توزيع الأزرار الصحيح لشاشات تيليجرام باللغة العربية (RTL):
+        # 1. المواد الصوتية: اليمين (الاستماع) | اليسار (سجل تعليقك)
         if pending["media_type"] in ["audio", "voice"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=listen_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🎧 الاستماع إلى المادة", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}"),
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
+                    InlineKeyboardButton("🎧 الاستماع إلى المادة", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}")
                 ],
                 [
                     InlineKeyboardButton("📢 انشر تؤجر", url=share_url)
                 ]
             ])
 
-        # 2. مقاطع الفيديو:
-        elif pending["media_type"] == "video":
+        # 2. مقاطع الفيديو: اليمين (مشاهدة الفيديو) | اليسار (سجل تعليقك)
+        elif pending["media_type"] in ["video", "video_doc"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=watch_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("▶️ مشاهدة الفيديو", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}"),
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
+                    InlineKeyboardButton("▶️ مشاهدة الفيديو", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}")
                 ],
                 [
                     InlineKeyboardButton("📢 انشر تؤجر", url=share_url)
                 ]
             ])
 
-        # 3. ملفات الـ PDF أو الصور والبوستات (صف واحد وزرّان فقط):
+        # 3. ملفات الـ PDF أو الصور (صف واحد): اليمين (فتح / تنزيل الملف) | اليسار (سجل تعليقك)
         else:
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("📥 مشاهدة / تنزيل المادة", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}"),
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
+                    InlineKeyboardButton("📥 فتح / تنزيل الملف", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}")
                 ]
             ])
 
