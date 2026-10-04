@@ -509,7 +509,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 5. استقبال مقطع فيديو مباشر (تصفير أي انتظار سابق فوراً)
+    # 5. استقبال مقطع فيديو مباشر
     if msg.video:
         context.user_data.clear()
         status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
@@ -533,15 +533,18 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             context.user_data["temp_media_type"] = "video"
             context.user_data["temp_file_id"] = msg.video.file_id
-            context.user_data["temp_cover_bytes"] = frame_bytes
+            context.user_data["temp_cover_bytes"] = bytes(frame_bytes)
             context.user_data["awaiting_custom_caption"] = True
 
             await status_msg.delete()
+            photo_file = io.BytesIO(bytes(frame_bytes))
+            photo_file.name = "cover.jpg"
             await msg.reply_photo(
-                photo=frame_bytes,
+                photo=photo_file,
                 caption="✍️ <b>تم التقاط كادر الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:"
             )
         except Exception as e:
+            logger.error(f"خطأ في معالجة الفيديو: {e}")
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
@@ -577,15 +580,18 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
                 context.user_data["temp_media_type"] = "video_doc"
                 context.user_data["temp_file_id"] = doc.file_id
-                context.user_data["temp_cover_bytes"] = frame_bytes
+                context.user_data["temp_cover_bytes"] = bytes(frame_bytes)
                 context.user_data["awaiting_custom_caption"] = True
 
                 await status_msg.delete()
+                photo_file = io.BytesIO(bytes(frame_bytes))
+                photo_file.name = "cover.jpg"
                 await msg.reply_photo(
-                    photo=frame_bytes,
+                    photo=photo_file,
                     caption="✍️ <b>تم استخراج كادر ملف الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص به؟\nتفضل بإرسال النص الآن:"
                 )
             except Exception as e:
+                logger.error(f"خطأ في معالجة ملف الفيديو: {e}")
                 await status_msg.edit_text(f"❌ تعذر معالجة ملف الفيديو: {e}")
             return
 
@@ -610,15 +616,18 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
                 context.user_data["temp_media_type"] = "pdf"
                 context.user_data["temp_file_id"] = doc.file_id
-                context.user_data["temp_cover_bytes"] = cover_bytes
+                context.user_data["temp_cover_bytes"] = bytes(cover_bytes)
                 context.user_data["awaiting_custom_caption"] = True
 
                 await status_msg.delete()
+                photo_file = io.BytesIO(bytes(cover_bytes))
+                photo_file.name = "cover.jpg"
                 await msg.reply_photo(
-                    photo=cover_bytes,
+                    photo=photo_file,
                     caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
                 )
             except Exception as e:
+                logger.error(f"خطأ في استخراج غلاف الـ PDF: {e}")
                 await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
             return
 
@@ -631,7 +640,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         context.user_data["temp_media_type"] = "image"
         context.user_data["temp_file_id"] = photo_obj.file_id
-        context.user_data["temp_cover_bytes"] = img_bytes
+        context.user_data["temp_cover_bytes"] = bytes(img_bytes)
         context.user_data["awaiting_custom_caption"] = True
 
         await msg.reply_text("✍️ <b>تم استلام التصميم الدعوي.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا المنشور؟\nتفضل بإرسال النص الآن:")
@@ -656,8 +665,10 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }
             keyboard = [[InlineKeyboardButton("🚀 اعتماد ونشر في القناة الآن", callback_data="publish_now")]]
             await status_msg.delete()
+            photo_file = io.BytesIO(poster_bytes)
+            photo_file.name = "poster.jpg"
             await msg.reply_photo(
-                photo=poster_bytes,
+                photo=photo_file,
                 caption=f"🎙 <b>معاينة البوستر الإسلامي بالعنوان المطلوب:</b>\n\n{custom_caption}",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
@@ -673,8 +684,10 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }
             keyboard = [[InlineKeyboardButton("🚀 اعتماد ونشر في القناة الآن", callback_data="publish_now")]]
             await status_msg.delete()
+            photo_file = io.BytesIO(cover_bytes)
+            photo_file.name = "cover.jpg"
             await msg.reply_photo(
-                photo=cover_bytes,
+                photo=photo_file,
                 caption=f"📋 <b>معاينة المادة بالكابشن المطلوب:</b>\n\n{custom_caption}",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
@@ -712,8 +725,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         encoded_caption = urllib.parse.quote(pending["caption"])
 
-        # توزيع الأزرار المعتمد لشاشات الهاتف باللغة العربية:
-        # الترتيب يبدأ بالزر الذي تريده في اليمين أولاً ثم زر اليسار
+        # توزيع الأزرار المعتمد لواجهات RTL:
         # 1. المواد الصوتية:
         if pending["media_type"] in ["audio", "voice"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=listen_{pub_id}&text={encoded_caption}"
@@ -750,9 +762,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
 
         try:
+            publish_photo = io.BytesIO(pending["cover_bytes"])
+            publish_photo.name = "channel_cover.jpg"
             await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
-                photo=pending["cover_bytes"],
+                photo=publish_photo,
                 caption=pending["caption"],
                 reply_markup=channel_markup
             )
@@ -760,6 +774,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(f"✅ تم النشر في القناة بنجاح بالأزرار المتفق عليها!\nرقم المنشور: <code>{pub_id}</code>", parse_mode="HTML")
             context.user_data["pending_pub"] = None
         except Exception as e:
+            logger.error(f"خطأ في النشر بالقناة: {e}")
             await query.message.reply_text(f"❌ تعذر النشر في القناة: {e}")
 
 # ----------------- الدالة الرئيسية -----------------
