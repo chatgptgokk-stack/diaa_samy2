@@ -217,6 +217,7 @@ def create_audio_poster(title_text: str) -> bytes:
     image = Image.new("RGB", (width, height), color=(18, 30, 49))
     draw = ImageDraw.Draw(image)
 
+    # إطار إسلامي ذهبي
     draw.rectangle([45, 45, width - 45, height - 45], outline=(212, 175, 55), width=7)
     draw.rectangle([65, 65, width - 65, height - 65], outline=(160, 130, 40), width=2)
 
@@ -329,7 +330,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_audio(audio=file_id, caption=cap or "", parse_mode="HTML")
 
-    # تحميل أو فتح كتاب PDF أو صورة
+    # فتح / تحميل ملف أو صورة
     elif payload.startswith("doc_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -380,18 +381,14 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_me = await context.bot.get_me()
 
-    # الترتيب معدل هندسياً ليظهر في تيليجرام باللغة العربية:
-    # الصف الأول: الخطب (يمين) | الفيديوهات (يسار)
-    # الصف الثاني: الكتب (يمين) | البحث (يسار)
-    # الصف الثالث عريض: اسأل الشيخ
     keyboard = [
         [
-            InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
             InlineKeyboardButton("🎙 الخطب", url=f"https://t.me/{bot_me.username}?start=lectures"),
+            InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
         ],
         [
-            InlineKeyboardButton("🔎 البحث", url=f"https://t.me/{bot_me.username}?start=search"),
             InlineKeyboardButton("📚 الكتب", url=f"https://t.me/{bot_me.username}?start=books"),
+            InlineKeyboardButton("🔎 البحث", url=f"https://t.me/{bot_me.username}?start=search"),
         ],
         [
             InlineKeyboardButton("📩 اسأل الشيخ", url=f"https://t.me/{bot_me.username}?start=ask_admin")
@@ -503,7 +500,144 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id != ADMIN_USER_ID:
         return
 
-    # 4. إدخال الكابشن يدوياً من المشرف بعد طلبه
+    # 4. استقبال ملف صوتي جديد (تصفير أي انتظار سابق فوراً)
+    if msg.audio or msg.voice:
+        context.user_data.clear()
+        context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
+        context.user_data["temp_file_id"] = (msg.voice or msg.audio).file_id
+        context.user_data["awaiting_custom_caption"] = True
+        await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
+        return
+
+    # 5. استقبال مقطع فيديو مباشر (تصفير أي انتظار سابق فوراً)
+    if msg.video:
+        context.user_data.clear()
+        status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
+        frame_bytes = None
+        try:
+            if msg.video.thumbnail:
+                thumb_file = await context.bot.get_file(msg.video.thumbnail.file_id)
+                frame_bytes = await thumb_file.download_as_bytearray()
+
+            if not frame_bytes and (msg.video.file_size or 0) < 20 * 1024 * 1024:
+                tg_file = await context.bot.get_file(msg.video.file_id)
+                temp_path = f"temp_vid_{msg.video.file_id[:8]}.mp4"
+                await tg_file.download_to_drive(temp_path)
+                frame_bytes = extract_video_frame(temp_path)
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+            if not frame_bytes:
+                await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو، يرجى إرسال صورة كغلاف للفيديو أولاً.")
+                return
+
+            context.user_data["temp_media_type"] = "video"
+            context.user_data["temp_file_id"] = msg.video.file_id
+            context.user_data["temp_cover_bytes"] = frame_bytes
+            context.user_data["awaiting_custom_caption"] = True
+
+            await status_msg.delete()
+            await msg.reply_photo(
+                photo=frame_bytes,
+                caption="✍️ <b>تم التقاط كادر الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:"
+            )
+        except Exception as e:
+            await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
+        return
+
+    # 6. استقبال المستندات (فيديوهات ملفات أو كتب PDF)
+    if msg.document:
+        doc = msg.document
+        mime = (doc.mime_type or "").lower()
+        file_name = (doc.file_name or "").lower()
+        video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.rmvb', '.flv', '.3gp')
+
+        # أ- ملف فيديو مرسل كمستند
+        if mime.startswith("video/") or file_name.endswith(video_extensions):
+            context.user_data.clear()
+            status_msg = await msg.reply_text("⏳ جاري معالجة ملف الفيديو واستخراج الكادر...")
+            frame_bytes = None
+            try:
+                if doc.thumbnail:
+                    thumb_file = await context.bot.get_file(doc.thumbnail.file_id)
+                    frame_bytes = await thumb_file.download_as_bytearray()
+
+                if not frame_bytes and (doc.file_size or 0) < 20 * 1024 * 1024:
+                    tg_file = await context.bot.get_file(doc.file_id)
+                    ext = os.path.splitext(file_name)[1] or ".mp4"
+                    temp_path = f"temp_doc_{doc.file_id[:8]}{ext}"
+                    await tg_file.download_to_drive(temp_path)
+                    frame_bytes = extract_video_frame(temp_path)
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+
+                if not frame_bytes:
+                    await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو لكبر حجم الملف بدون غلاف مصغر.")
+                    return
+
+                context.user_data["temp_media_type"] = "video_doc"
+                context.user_data["temp_file_id"] = doc.file_id
+                context.user_data["temp_cover_bytes"] = frame_bytes
+                context.user_data["awaiting_custom_caption"] = True
+
+                await status_msg.delete()
+                await msg.reply_photo(
+                    photo=frame_bytes,
+                    caption="✍️ <b>تم استخراج كادر ملف الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص به؟\nتفضل بإرسال النص الآن:"
+                )
+            except Exception as e:
+                await status_msg.edit_text(f"❌ تعذر معالجة ملف الفيديو: {e}")
+            return
+
+        # ب- كتاب PDF
+        elif mime == "application/pdf" or file_name.endswith('.pdf'):
+            context.user_data.clear()
+            status_msg = await msg.reply_text("⏳ جاري استخراج الصفحة الأولى لغلاف الكتاب...")
+            cover_bytes = None
+            try:
+                if doc.thumbnail:
+                    thumb_file = await context.bot.get_file(doc.thumbnail.file_id)
+                    cover_bytes = await thumb_file.download_as_bytearray()
+                
+                if not cover_bytes and (doc.file_size or 0) < 20 * 1024 * 1024:
+                    tg_file = await context.bot.get_file(doc.file_id)
+                    pdf_bytes = await tg_file.download_as_bytearray()
+                    cover_bytes = extract_pdf_cover(pdf_bytes)
+
+                if not cover_bytes:
+                    await status_msg.edit_text("❌ تعذر سحب غلاف الـ PDF من تيليجرام.")
+                    return
+
+                context.user_data["temp_media_type"] = "pdf"
+                context.user_data["temp_file_id"] = doc.file_id
+                context.user_data["temp_cover_bytes"] = cover_bytes
+                context.user_data["awaiting_custom_caption"] = True
+
+                await status_msg.delete()
+                await msg.reply_photo(
+                    photo=cover_bytes,
+                    caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
+                )
+            except Exception as e:
+                await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
+            return
+
+    # 7. استقبال صورة أو بوستر
+    if msg.photo:
+        context.user_data.clear()
+        photo_obj = msg.photo[-1]
+        tg_file = await context.bot.get_file(photo_obj.file_id)
+        img_bytes = await tg_file.download_as_bytearray()
+
+        context.user_data["temp_media_type"] = "image"
+        context.user_data["temp_file_id"] = photo_obj.file_id
+        context.user_data["temp_cover_bytes"] = img_bytes
+        context.user_data["awaiting_custom_caption"] = True
+
+        await msg.reply_text("✍️ <b>تم استلام التصميم الدعوي.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا المنشور؟\nتفضل بإرسال النص الآن:")
+        return
+
+    # 8. إدخال الكابشن يدوياً من المشرف بعد طلبه
     if context.user_data.get("awaiting_custom_caption") and msg.text:
         custom_caption = msg.text.strip()
         pending_type = context.user_data.get("temp_media_type")
@@ -547,138 +681,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return
 
-    # 5. استقبال الملف الصوتي
-    if msg.audio or msg.voice:
-        context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
-        context.user_data["temp_file_id"] = (msg.voice or msg.audio).file_id
-        context.user_data["awaiting_custom_caption"] = True
-        await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
-        return
-
-    # 6. استقبال مقطع الفيديو المباشر
-    elif msg.video:
-        status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
-        frame_bytes = None
-        try:
-            if msg.video.thumbnail:
-                thumb_file = await context.bot.get_file(msg.video.thumbnail.file_id)
-                frame_bytes = await thumb_file.download_as_bytearray()
-
-            if not frame_bytes and (msg.video.file_size or 0) < 20 * 1024 * 1024:
-                tg_file = await context.bot.get_file(msg.video.file_id)
-                temp_path = f"temp_vid_{msg.video.file_id[:8]}.mp4"
-                await tg_file.download_to_drive(temp_path)
-                frame_bytes = extract_video_frame(temp_path)
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-
-            if not frame_bytes:
-                await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو، يرجى إرسال صورة كغلاف للفيديو أولاً.")
-                return
-
-            context.user_data["temp_media_type"] = "video"
-            context.user_data["temp_file_id"] = msg.video.file_id
-            context.user_data["temp_cover_bytes"] = frame_bytes
-            context.user_data["awaiting_custom_caption"] = True
-
-            await status_msg.delete()
-            await msg.reply_photo(
-                photo=frame_bytes,
-                caption="✍️ <b>تم التقاط كادر الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:"
-            )
-        except Exception as e:
-            await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
-        return
-
-    # 7. معالجة المستندات (PDF أو فيديوهات مرسلة كملفات)
-    elif msg.document:
-        doc = msg.document
-        mime = (doc.mime_type or "").lower()
-        file_name = (doc.file_name or "").lower()
-        video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.rmvb', '.flv', '.3gp')
-
-        # أ- إذا كان المستند ملف فيديو بجميع صيغه
-        if mime.startswith("video/") or file_name.endswith(video_extensions):
-            status_msg = await msg.reply_text("⏳ جاري معالجة ملف الفيديو واستخراج الكادر...")
-            frame_bytes = None
-            try:
-                if doc.thumbnail:
-                    thumb_file = await context.bot.get_file(doc.thumbnail.file_id)
-                    frame_bytes = await thumb_file.download_as_bytearray()
-
-                if not frame_bytes and (doc.file_size or 0) < 20 * 1024 * 1024:
-                    tg_file = await context.bot.get_file(doc.file_id)
-                    ext = os.path.splitext(file_name)[1] or ".mp4"
-                    temp_path = f"temp_doc_{doc.file_id[:8]}{ext}"
-                    await tg_file.download_to_drive(temp_path)
-                    frame_bytes = extract_video_frame(temp_path)
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-
-                if not frame_bytes:
-                    await status_msg.edit_text("❌ تعذر استخراج كادر الفيديو نظراً لكبر حجم الملف بدون غلاف مصغر.")
-                    return
-
-                context.user_data["temp_media_type"] = "video_doc"
-                context.user_data["temp_file_id"] = doc.file_id
-                context.user_data["temp_cover_bytes"] = frame_bytes
-                context.user_data["awaiting_custom_caption"] = True
-
-                await status_msg.delete()
-                await msg.reply_photo(
-                    photo=frame_bytes,
-                    caption="✍️ <b>تم استخراج كادر ملف الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص به؟\nتفضل بإرسال النص الآن:"
-                )
-            except Exception as e:
-                await status_msg.edit_text(f"❌ تعذر معالجة ملف الفيديو: {e}")
-            return
-
-        # ب- إذا كان المستند كتاب PDF
-        elif mime == "application/pdf" or file_name.endswith('.pdf'):
-            status_msg = await msg.reply_text("⏳ جاري استخراج الصفحة الأولى لغلاف الكتاب...")
-            cover_bytes = None
-            try:
-                if doc.thumbnail:
-                    thumb_file = await context.bot.get_file(doc.thumbnail.file_id)
-                    cover_bytes = await thumb_file.download_as_bytearray()
-                
-                if not cover_bytes and (doc.file_size or 0) < 20 * 1024 * 1024:
-                    tg_file = await context.bot.get_file(doc.file_id)
-                    pdf_bytes = await tg_file.download_as_bytearray()
-                    cover_bytes = extract_pdf_cover(pdf_bytes)
-
-                if not cover_bytes:
-                    await status_msg.edit_text("❌ تعذر سحب غلاف الـ PDF من تيليجرام.")
-                    return
-
-                context.user_data["temp_media_type"] = "pdf"
-                context.user_data["temp_file_id"] = doc.file_id
-                context.user_data["temp_cover_bytes"] = cover_bytes
-                context.user_data["awaiting_custom_caption"] = True
-
-                await status_msg.delete()
-                await msg.reply_photo(
-                    photo=cover_bytes,
-                    caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
-                )
-            except Exception as e:
-                await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
-            return
-
-    # 8. استقبال صورة أو بوستر
-    elif msg.photo:
-        photo_obj = msg.photo[-1]
-        tg_file = await context.bot.get_file(photo_obj.file_id)
-        img_bytes = await tg_file.download_as_bytearray()
-
-        context.user_data["temp_media_type"] = "image"
-        context.user_data["temp_file_id"] = photo_obj.file_id
-        context.user_data["temp_cover_bytes"] = img_bytes
-        context.user_data["awaiting_custom_caption"] = True
-
-        await msg.reply_text("✍️ <b>تم استلام التصميم الدعوي.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا المنشور؟\nتفضل بإرسال النص الآن:")
-        return
-
 # ----------------- معالجة الأزرار التفاعلية والنشر في القناة -----------------
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -710,39 +712,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         encoded_caption = urllib.parse.quote(pending["caption"])
 
-        # توزيع الأزرار الصحيح لشاشات تيليجرام باللغة العربية (RTL):
-        # 1. المواد الصوتية: اليمين (الاستماع) | اليسار (سجل تعليقك)
+        # توزيع الأزرار المعتمد لشاشات الهاتف باللغة العربية:
+        # الترتيب يبدأ بالزر الذي تريده في اليمين أولاً ثم زر اليسار
+        # 1. المواد الصوتية:
         if pending["media_type"] in ["audio", "voice"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=listen_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
-                    InlineKeyboardButton("🎧 الاستماع إلى المادة", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}")
+                    InlineKeyboardButton("🎧 الاستماع إلى المادة", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}"),
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
                 ],
                 [
                     InlineKeyboardButton("📢 انشر تؤجر", url=share_url)
                 ]
             ])
 
-        # 2. مقاطع الفيديو: اليمين (مشاهدة الفيديو) | اليسار (سجل تعليقك)
+        # 2. مقاطع الفيديو:
         elif pending["media_type"] in ["video", "video_doc"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=watch_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
-                    InlineKeyboardButton("▶️ مشاهدة الفيديو", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}")
+                    InlineKeyboardButton("▶️ مشاهدة الفيديو", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}"),
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
                 ],
                 [
                     InlineKeyboardButton("📢 انشر تؤجر", url=share_url)
                 ]
             ])
 
-        # 3. ملفات الـ PDF أو الصور (صف واحد): اليمين (فتح / تنزيل الملف) | اليسار (سجل تعليقك)
+        # 3. ملفات الـ PDF أو الصور (صف واحد):
         else:
             channel_markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}"),
-                    InlineKeyboardButton("📥 فتح / تنزيل الملف", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}")
+                    InlineKeyboardButton("📥 فتح / تنزيل الملف", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}"),
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
                 ]
             ])
 
