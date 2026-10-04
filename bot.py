@@ -4,8 +4,8 @@ import io
 import html
 import logging
 import threading
-import textwrap
 import urllib.request
+import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import psycopg2
 from psycopg2 import pool
@@ -45,7 +45,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf"
 FONT_PATH = "Amiri-Bold.ttf"
 
-# ----------------- خادم الويب المصغر لمراقبة UptimeRobot -----------------
+# ----------------- خادم الويب لمراقبة UptimeRobot -----------------
 class SimpleHealthHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
@@ -59,7 +59,6 @@ class SimpleHealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is Active and Running!")
 
     def log_message(self, format, *args):
-        # منع تسجيل طلبات الفحص الدورية للحفاظ على نظافة السجلات
         return
 
 def run_http_server():
@@ -68,7 +67,7 @@ def run_http_server():
     logger.info(f"تم تشغيل خادم المراقبة على المنفذ: {port}")
     server.serve_forever()
 
-# ----------------- إدارة قاعدة بيانات Supabase (PostgreSQL) -----------------
+# ----------------- قاعدة بيانات Supabase (PostgreSQL) -----------------
 def get_db_connection():
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL غير محدد في المتغيرات!")
@@ -103,7 +102,7 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
-    logger.info("تم التحقق من جاهزية جداول قاعدة البيانات بنجاح.")
+    logger.info("تم التحقق من جداول قاعدة البيانات بنجاح.")
 
 def save_publication(media_type, file_id, cover_file_id, caption):
     conn = get_db_connection()
@@ -139,7 +138,7 @@ def log_event(pub_id, action_type, user):
         cur.close()
         conn.close()
     except Exception as e:
-        logger.error(f"خطأ أثناء تسجيل الإحصائية: {e}")
+        logger.error(f"خطأ في تسجيل الإحصائيات: {e}")
 
 # ----------------- دالة إرسال إشعار سري آمن للمشرف بصيغة HTML -----------------
 async def notify_admin_event(context: ContextTypes.DEFAULT_TYPE, title: str, pub_id: int, user):
@@ -160,13 +159,15 @@ async def notify_admin_event(context: ContextTypes.DEFAULT_TYPE, title: str, pub
     except Exception as e:
         logger.error(f"فشل إرسال إشعار المشرف: {e}")
 
-# ----------------- وظائف معالجة الوسائط وتوليد الأغلفة والخطوط -----------------
+# ----------------- معالجة الوسائط والأغلفة -----------------
 def ensure_arabic_font():
-    """تحميل خط أميري العربي تلقائياً إذا لم يكن متوفراً في السيرفر"""
-    if not os.path.exists(FONT_PATH):
+    if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 10000:
         try:
-            logger.info("جاري تحميل الخط العربي الأصيل Amiri-Bold...")
-            urllib.request.urlretrieve(FONT_URL, FONT_PATH)
+            logger.info("جاري تحميل الخط العربي Amiri-Bold...")
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            req = urllib.request.Request(FONT_URL, headers=headers)
+            with urllib.request.urlopen(req) as response, open(FONT_PATH, 'wb') as out_file:
+                out_file.write(response.read())
             logger.info("تم تحميل الخط العربي بنجاح.")
         except Exception as e:
             logger.error(f"فشل تحميل الخط العربي: {e}")
@@ -180,6 +181,7 @@ def extract_pdf_cover(pdf_bytes: bytes) -> bytes:
     return img_data
 
 def extract_video_frame(video_path: str) -> bytes:
+    """استخراج كادر نقي بأبعاده الأصلية دون أي تشويه أو قص"""
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_MSEC, 2000)
     success, frame = cap.read()
@@ -188,9 +190,39 @@ def extract_video_frame(video_path: str) -> bytes:
         success, frame = cap.read()
     cap.release()
     if success:
-        _, buffer = cv2.imencode(".jpg", frame)
+        _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
         return buffer.tobytes()
     return None
+
+def split_arabic_text(text: str, max_chars_per_line: int = 28) -> list:
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+
+    for word in words:
+        if current_length + len(word) + 1 <= max_chars_per_line:
+            current_line.append(word)
+            current_length += len(word) + 1
+        else:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word]
+            current_length = len(word)
+
+    if current_line:
+        lines.append(" ".join(current_line))
+    return lines
+
+def format_arabic_line(line: str) -> str:
+    configuration = {
+        'delete_harakat': False,
+        'support_ligatures': True,
+        'RIAL': True
+    }
+    reshaper = arabic_reshaper.ArabicReshaper(configuration=configuration)
+    reshaped_text = reshaper.reshape(line)
+    return get_display(reshaped_text)
 
 def create_audio_poster(title_text: str) -> bytes:
     ensure_arabic_font()
@@ -198,42 +230,35 @@ def create_audio_poster(title_text: str) -> bytes:
     image = Image.new("RGB", (width, height), color=(18, 30, 49))
     draw = ImageDraw.Draw(image)
 
-    # إطار إسلامي ملكي مزدوج
+    # زخارف إسلامية ذهبية ملكية
     draw.rectangle([45, 45, width - 45, height - 45], outline=(212, 175, 55), width=7)
     draw.rectangle([65, 65, width - 65, height - 65], outline=(160, 130, 40), width=2)
 
-    # تحميل الخط العربي المتخصص
+    # زوايا زخرفية داخلية
+    corner_len = 40
+    for cx, cy in [(75, 75), (width - 75, 75), (75, height - 75), (width - 75, height - 75)]:
+        draw.rectangle([cx - 5, cy - 5, cx + 5, cy + 5], fill=(212, 175, 55))
+
     try:
-        title_font = ImageFont.truetype(FONT_PATH, 55)
-        footer_font = ImageFont.truetype(FONT_PATH, 38)
+        title_font = ImageFont.truetype(FONT_PATH, 52)
+        footer_font = ImageFont.truetype(FONT_PATH, 36)
     except Exception:
         title_font = ImageFont.load_default()
         footer_font = title_font
 
-    # تقسيم النص الطويل تلقائياً لأسطر متناسقة حتى لا يخرج عن الإطار
-    wrapped_lines = textwrap.wrap(title_text, width=28)
-    if not wrapped_lines:
-        wrapped_lines = [title_text]
+    raw_lines = split_arabic_text(title_text, max_chars_per_line=26)
+    processed_lines = [format_arabic_line(l) for l in raw_lines]
 
-    processed_lines = []
-    for line in wrapped_lines:
-        reshaped = arabic_reshaper.reshape(line)
-        bidi_line = get_display(reshaped)
-        processed_lines.append(bidi_line)
-
-    # حساب موضع البداية لمركزة النص رأسياً
     line_spacing = 25
     line_height = 65
     total_text_height = len(processed_lines) * line_height + (len(processed_lines) - 1) * line_spacing
     start_y = (height - total_text_height) // 2
 
-    # كتابة الأسطر في المنتصف
     for i, line in enumerate(processed_lines):
         y = start_y + i * (line_height + line_spacing)
         draw.text((width // 2, y), line, fill=(245, 245, 245), font=title_font, anchor="mm")
 
-    # توقيع المنصة في أسفل البوستر
-    footer_text = get_display(arabic_reshaper.reshape("منصة القناة الرسمية"))
+    footer_text = format_arabic_line("منصة القناة الرسمية")
     draw.text((width // 2, height - 120), footer_text, fill=(212, 175, 55), font=footer_font, anchor="mm")
 
     out_buffer = io.BytesIO()
@@ -250,13 +275,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             admin_panel = (
                 "👋 مرحباً بك يا مدير القناة في لوحة التحكم الإدارية:\n\n"
                 "• لتحديث لوحة الأزرار في القناة: أرسل الأمر /menu.\n"
-                "• إرسال فيديو: كادر سينمائي ثم كتابة الكابشن يدوياً.\n"
-                "• إرسال صوت: إرسال المقطع ثم كتابة العنوان بيدك ليظهر في البوستر الملكي.\n"
-                "• إرسال PDF: استخراج الغلاف ثم كتابة وصف الكتاب بيدك قبل النشر."
+                "• إرسال صوتيات: تصميم إسلامي ملكي بعد كتابة الكابشن بيدك.\n"
+                "• إرسال فيديو: كادر نقي طبيعي مع طلب الكابشن يدوياً.\n"
+                "• إرسال PDF: استخراج الصفحة الأولى كغلاف مع طلب الكابشن.\n"
+                "• إرسال صورة / بوستر: نشر دعوي مباشر مع طلب الكابشن."
             )
             await update.message.reply_text(admin_panel)
         else:
-            await update.message.reply_text("أهلاً بك! يمكنك تصفح مواد القناة والخدمات عبر الأزرار المتاحة فيها.")
+            await update.message.reply_text("أهلاً بك! يمكنك تصفح مواد القناة وخدماتها من خلال الأزرار التفاعلية المرفقة بالمنشورات.")
         return
 
     payload = args[0]
@@ -265,10 +291,30 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if payload == "ask_admin":
         await update.message.reply_text(
             "🔒 مرحباً بك في خدمة (إسأل الشيخ) الخاصة:\n\n"
-            "هذه المحادثة سرية ومشفرة بالكامل ولا يطّلع عليها أحد.\n"
-            "تفضل بكتابة سؤالك الآن نصياً أو أرسله كتسجيل صوتي (🎙):"
+            "هذه المحادثة سرية ومشفرة تماماً بينك وبين الشيخ.\n"
+            "تفضل بكتابة سؤالك الآن نصياً أو سجّل مقطعاً صوتياً (🎙):"
         )
         context.user_data["awaiting_question"] = True
+        return
+
+    # خدمة سجل تعليقك على مادة محددة
+    if payload.startswith("comment_"):
+        try:
+            pub_id = int(payload.split("_")[1])
+        except (IndexError, ValueError):
+            await update.message.reply_text("عذراً، الرابط غير صحيح.")
+            return
+
+        pub = get_publication(pub_id)
+        pub_title = pub[3] if pub and pub[3] else f"المنشور رقم {pub_id}"
+
+        context.user_data["awaiting_material_comment"] = pub_id
+        await update.message.reply_text(
+            f"💬 <b>تسجيل تعليق حول المادة:</b>\n"
+            f"« {pub_title} »\n\n"
+            f"تفضل بكتابة تعليقك أو انطباعك الآن (نصاً أو تسجيلاً صوتياً 🎙)، وسيصل مباشرة للإدارة في سرية تامة:",
+            parse_mode="HTML"
+        )
         return
 
     # استماع لتسجيل صوتي
@@ -280,11 +326,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(pub_id, "listen_audio", user)
-        await notify_admin_event(context, "إشعار استماع لخطبة (سري)", pub_id, user)
+        await notify_admin_event(context, "إشعار استماع لمادة صوتية (سري)", pub_id, user)
 
         pub = get_publication(pub_id)
         if not pub:
-            await update.message.reply_text("عذراً، هذا التسجيل غير متاح حالياً.")
+            await update.message.reply_text("عذراً، هذا المقطع الصوتي غير متاح حالياً.")
             return
 
         media_type, file_id, _, cap = pub
@@ -293,7 +339,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_audio(audio=file_id, caption=cap or "", parse_mode="HTML")
 
-    # تحميل أو فتح كتاب PDF
+    # تحميل أو فتح كتاب PDF أو صورة
     elif payload.startswith("doc_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -302,15 +348,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         log_event(pub_id, "download_doc", user)
-        await notify_admin_event(context, "إشعار فتح / تحميل كتاب (سري)", pub_id, user)
+        await notify_admin_event(context, "إشعار مشاهدة / تنزيل مادة (سري)", pub_id, user)
 
         pub = get_publication(pub_id)
         if not pub:
-            await update.message.reply_text("عذراً، هذا الكتاب غير متاح حالياً.")
+            await update.message.reply_text("عذراً، هذه المادة غير متاحة حالياً.")
             return
 
-        _, file_id, _, cap = pub
-        await update.message.reply_document(document=file_id, caption=cap or "", parse_mode="HTML")
+        media_type, file_id, _, cap = pub
+        if media_type == "image":
+            await update.message.reply_photo(photo=file_id, caption=cap or "", parse_mode="HTML")
+        else:
+            await update.message.reply_document(document=file_id, caption=cap or "", parse_mode="HTML")
 
     # مشاهدة مقطع فيديو
     elif payload.startswith("watch_"):
@@ -331,30 +380,35 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, file_id, _, cap = pub
         await update.message.reply_video(video=file_id, caption=cap or "", parse_mode="HTML")
 
-# ----------------- نشر وتحديث لوحة الأزرار /menu -----------------
+# ----------------- نشر وتحديث لوحة /menu في القناة -----------------
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         return
 
     bot_me = await context.bot.get_me()
+
+    # لوحة القناة المتفق عليها بالضبط:
+    # الصف الأول: الخطب | الفيديوهات
+    # الصف الثاني: الكتب | البحث
+    # الصف الثالث (عريض): اسأل الشيخ
     keyboard = [
         [
-            InlineKeyboardButton("🎬 الفيديوهات المرئية", url=f"https://t.me/{bot_me.username}?start=videos"),
-            InlineKeyboardButton("🎙 الخطب والمحاضرات", url=f"https://t.me/{bot_me.username}?start=lectures"),
+            InlineKeyboardButton("🎙 الخطب", url=f"https://t.me/{bot_me.username}?start=lectures"),
+            InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
         ],
         [
-            InlineKeyboardButton("🔎 البحث في المحتوى", url=f"https://t.me/{bot_me.username}?start=search"),
-            InlineKeyboardButton("📚 الكتب والرسائل", url=f"https://t.me/{bot_me.username}?start=books"),
+            InlineKeyboardButton("📚 الكتب", url=f"https://t.me/{bot_me.username}?start=books"),
+            InlineKeyboardButton("🔎 البحث", url=f"https://t.me/{bot_me.username}?start=search"),
         ],
         [
-            InlineKeyboardButton("📩 إسأل الشيخ (استشارة خاصة وسرية)", url=f"https://t.me/{bot_me.username}?start=ask_admin")
+            InlineKeyboardButton("📩 اسأل الشيخ", url=f"https://t.me/{bot_me.username}?start=ask_admin")
         ]
     ]
 
     menu_text = (
         "🌿 <b>مرحباً بكم في منصة القناة الرسمية</b> 🌿\n\n"
-        "يمكنكم عبر اللوحة التفاعلية أدناه تصفح كافة الفوائد والمحتويات، "
-        "أو التواصل وإرسال استشاراتكم وأسئلتكم الخاصة في سرية تامة:"
+        "يمكنكم عبر اللوحة التفاعلية أدناه تصفح كافة أقسام المحتوى الدعوي، "
+        "أو التواصل وإرسال استفساراتكم الخاصة في سرية تامة:"
     )
 
     try:
@@ -364,29 +418,29 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
-        await update.message.reply_text("✅ تم تحديث ونشر لوحة الأزرار في القناة بنجاح!\nيمكنك تثبيتها (Pin) في أعلى القناة الآن.")
+        await update.message.reply_text("✅ تم نشر لوحة الأزرار في القناة بنجاح بالتقسيم المعتمد!")
     except Exception as e:
         await update.message.reply_text(f"❌ تعذر نشر اللوحة في القناة: {e}")
 
-# ----------------- استقبال وتجهيز المواد للنشر من المشرف -----------------
+# ----------------- استقبال وتجهيز المواد للنشر من المشرف والردود -----------------
 async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
 
-    # 1. استلام أسئلة الأعضاء الموجهة للشيخ
+    # 1. استلام سؤال خاص للشيخ
     if context.user_data.get("awaiting_question") and user.id != ADMIN_USER_ID:
         context.user_data["awaiting_question"] = False
         clean_name = html.escape(user.full_name or "بدون اسم")
         uname = f"@{user.username}" if user.username else "بدون معرف"
 
         admin_alert = (
-            f"❓ <b>سؤال واستشارة خاصة واردة للشيخ (سري جداً)</b>\n"
-            f"• من: {clean_name} ({uname})\n"
+            f"❓ <b>سؤال واستشارة خاصة للشيخ (سري)</b>\n"
+            f"• السائل: {clean_name} ({uname})\n"
             f"• المعرف (ID): <code>{user.id}</code>\n"
             f"• النوع: {'صوت' if msg.voice or msg.audio else 'نص'}\n\n"
         )
 
-        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✍️ الإجابة على سؤال العضو", callback_data=f"reply_{user.id}")]])
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✍️️ الإجابة على السؤال", callback_data=f"reply_{user.id}")]])
 
         if msg.text:
             admin_alert += f"📝 <b>نص السؤال:</b>\n{html.escape(msg.text)}"
@@ -396,45 +450,74 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif msg.audio:
             await context.bot.send_audio(chat_id=ADMIN_USER_ID, audio=msg.audio.file_id, caption=admin_alert, parse_mode="HTML", reply_markup=reply_markup)
 
-        await msg.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيقوم الشيخ بالاطلاع عليه والإجابة عن استشارتك قريباً بإذن الله.")
+        await msg.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيجيب عليه الشيخ قريباً بإذن الله.")
         return
 
-    # 2. إرسال إجابة الشيخ إلى السائل
+    # 2. استلام تعليق العضو حول مادة محددة (سجّل تعليقك)
+    if context.user_data.get("awaiting_material_comment") and user.id != ADMIN_USER_ID:
+        pub_id = context.user_data["awaiting_material_comment"]
+        context.user_data["awaiting_material_comment"] = None
+
+        clean_name = html.escape(user.full_name or "بدون اسم")
+        uname = f"@{user.username}" if user.username else "بدون معرف"
+
+        comment_alert = (
+            f"💬 <b>تعليق وارد حول مادة بالقناة (سري)</b>\n"
+            f"• على المنشور رقم: <code>{pub_id}</code>\n"
+            f"• من: {clean_name} ({uname})\n"
+            f"• المعرف (ID): <code>{user.id}</code>\n"
+            f"• النوع: {'صوت' if msg.voice or msg.audio else 'نص'}\n\n"
+        )
+
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✍️ الرد على المعلق", callback_data=f"reply_{user.id}")]])
+
+        if msg.text:
+            comment_alert += f"📝 <b>نص التعليق:</b>\n{html.escape(msg.text)}"
+            await context.bot.send_message(chat_id=ADMIN_USER_ID, text=comment_alert, parse_mode="HTML", reply_markup=reply_markup)
+        elif msg.voice:
+            await context.bot.send_voice(chat_id=ADMIN_USER_ID, voice=msg.voice.file_id, caption=comment_alert, parse_mode="HTML", reply_markup=reply_markup)
+        elif msg.audio:
+            await context.bot.send_audio(chat_id=ADMIN_USER_ID, audio=msg.audio.file_id, caption=comment_alert, parse_mode="HTML", reply_markup=reply_markup)
+
+        await msg.reply_text("✅ شكراً لك، تم تسجيل تعليقك وإرساله للإدارة بنجاح.")
+        return
+
+    # 3. إرسال رد المشرف للسائل أو المعلق
     if user.id == ADMIN_USER_ID and context.user_data.get("answering_user_id"):
         target_id = context.user_data["answering_user_id"]
         try:
             if msg.text:
                 await context.bot.send_message(
                     chat_id=target_id,
-                    text=f"📨 <b>إجابة واردة من الشيخ على استشارتك:</b>\n\n{html.escape(msg.text)}",
+                    text=f"📨 <b>رد وارد من الإدارة على رسالتك:</b>\n\n{html.escape(msg.text)}",
                     parse_mode="HTML"
                 )
             elif msg.voice:
                 await context.bot.send_voice(
                     chat_id=target_id,
                     voice=msg.voice.file_id,
-                    caption="🎙 <b>إجابة صوتية واردة من الشيخ على استشارتك.</b>",
+                    caption="🎙 <b>تسجيل صوتي وارد من الإدارة رداً على رسالتك.</b>",
                     parse_mode="HTML"
                 )
-            await msg.reply_text("✅ تم إرسال الإجابة إلى السائل بنجاح في الخاص.")
+            await msg.reply_text("✅ تم إرسال الرد للشخص المعني بنجاح.")
         except Exception as e:
-            await msg.reply_text(f"❌ تعذر إرسال الإجابة للسائل: {e}")
+            await msg.reply_text(f"❌ تعذر توصيل الرد: {e}")
         finally:
             context.user_data["answering_user_id"] = None
         return
 
-    # فحص صلاحية الإدارة لباقي العمليات
+    # التحقق من صلاحية الإدارة
     if user.id != ADMIN_USER_ID:
         return
 
-    # 3. إذا أرسل المشرف نصاً وهو في حالة انتظار كتابة الكابشن يدوياً
+    # 4. إدخال الكابشن يدوياً من المشرف بعد طلبه
     if context.user_data.get("awaiting_custom_caption") and msg.text:
         custom_caption = msg.text.strip()
         pending_type = context.user_data.get("temp_media_type")
         file_id = context.user_data.get("temp_file_id")
         context.user_data["awaiting_custom_caption"] = False
 
-        status_msg = await msg.reply_text("⏳ جاري تجهيز المعاينة والتصميم بالعنوان المكتوب...")
+        status_msg = await msg.reply_text("⏳ جاري تجهيز المعاينة والتصميم بالعنوان الذي كتبته...")
 
         if pending_type in ["audio", "voice"]:
             poster_bytes = create_audio_poster(custom_caption)
@@ -448,15 +531,15 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.delete()
             await msg.reply_photo(
                 photo=poster_bytes,
-                caption=f"🎙 <b>البوستر الملكي بالعنوان المطلوب:</b>\n\n{custom_caption}",
+                caption=f"🎙 <b>معاينة البوستر الإسلامي بالعنوان المطلوب:</b>\n\n{custom_caption}",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
 
-        elif pending_type == "video":
+        elif pending_type in ["video", "pdf", "image"]:
             cover_bytes = context.user_data.get("temp_cover_bytes")
             context.user_data["pending_pub"] = {
-                "media_type": "video",
+                "media_type": pending_type,
                 "file_id": file_id,
                 "cover_bytes": cover_bytes,
                 "caption": custom_caption
@@ -465,40 +548,23 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.delete()
             await msg.reply_photo(
                 photo=cover_bytes,
-                caption=f"🎬 <b>معاينة الفيديو بالكابشن المطلوب:</b>\n\n{custom_caption}",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-
-        elif pending_type == "pdf":
-            cover_bytes = context.user_data.get("temp_cover_bytes")
-            context.user_data["pending_pub"] = {
-                "media_type": "pdf",
-                "file_id": file_id,
-                "cover_bytes": cover_bytes,
-                "caption": custom_caption
-            }
-            keyboard = [[InlineKeyboardButton("🚀 اعتماد ونشر في القناة الآن", callback_data="publish_now")]]
-            await status_msg.delete()
-            await msg.reply_photo(
-                photo=cover_bytes,
-                caption=f"📚 <b>معاينة الكتاب بالكابشن المطلوب:</b>\n\n{custom_caption}",
+                caption=f"📋 <b>معاينة المادة بالكابشن المطلوب:</b>\n\n{custom_caption}",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
         return
 
-    # 4. استقبال الملف الصوتي وانتظار الكابشن
+    # 5. استقبال الملف الصوتي والتوقف لطلب الكابشن
     if msg.audio or msg.voice:
         context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
         context.user_data["temp_file_id"] = (msg.voice or msg.audio).file_id
         context.user_data["awaiting_custom_caption"] = True
-        await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي بنجاح.</b>\n\nتفضل الآن بكتابة العنوان والكابشن المطلوب رسمه على البوستر الملكي:")
+        await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 5. استقبال الفيديو وانتظار الكابشن
+    # 6. استقبال مقطع الفيديو والتوقف لطلب الكابشن
     elif msg.video:
-        status_msg = await msg.reply_text("⏳ جاري التقاط الكادر السينمائي التلقائي من الفيديو...")
+        status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
         try:
             tg_file = await context.bot.get_file(msg.video.file_id)
             temp_path = f"temp_vid_{msg.video.file_id[:8]}.mp4"
@@ -513,14 +579,14 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["awaiting_custom_caption"] = True
 
             await status_msg.delete()
-            await msg.reply_text("✍️ <b>تم التقاط الكادر بنجاح.</b>\n\nتفضل الآن بكتابة الكابشن والشرح المطلوب نشره مع الفيديو:")
+            await msg.reply_text("✍️ <b>تم التقاط الكادر الطبيعي بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:")
         except Exception as e:
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
-    # 6. استقبال كتاب PDF وانتظار الكابشن
+    # 7. استقبال كتاب PDF والتوقف لطلب الكابشن
     elif msg.document and msg.document.mime_type == "application/pdf":
-        status_msg = await msg.reply_text("⏳ جاري استخراج غلاف الكتاب...")
+        status_msg = await msg.reply_text("⏳ جاري استخراج الصفحة الأولى كغلاف للملف...")
         try:
             tg_file = await context.bot.get_file(msg.document.file_id)
             pdf_bytes = await tg_file.download_as_bytearray()
@@ -532,12 +598,26 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data["awaiting_custom_caption"] = True
 
             await status_msg.delete()
-            await msg.reply_text("✍️ <b>تم استخراج الغلاف بنجاح.</b>\n\nتفضل الآن بكتابة اسم الكتاب والشرح المطلوب نشره معه:")
+            await msg.reply_text("✍️ <b>تم استخراج غلاف الكتاب بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن التعريفي للكتاب؟\nتفضل بإرسال النص الآن:")
         except Exception as e:
             await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
         return
 
-# ----------------- معالجة أزرار الكولباك (Callback Queries) -----------------
+    # 8. استقبال صورة أو بوستر والتوقف لطلب الكابشن
+    elif msg.photo:
+        photo_obj = msg.photo[-1]
+        tg_file = await context.bot.get_file(photo_obj.file_id)
+        img_bytes = await tg_file.download_as_bytearray()
+
+        context.user_data["temp_media_type"] = "image"
+        context.user_data["temp_file_id"] = photo_obj.file_id
+        context.user_data["temp_cover_bytes"] = img_bytes
+        context.user_data["awaiting_custom_caption"] = True
+
+        await msg.reply_text("✍️ <b>تم استلام التصميم الدعوي.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا المنشور؟\nتفضل بإرسال النص الآن:")
+        return
+
+# ----------------- معالجة الأزرار التفاعلية والنشر في القناة -----------------
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -546,7 +626,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_id = int(query.data.split("_")[1])
         context.user_data["answering_user_id"] = target_id
         await query.message.reply_text(
-            f"✍️ <b>وضع الرد السري على السائل (ID: <code>{target_id}</code>):</b>\n\nتفضل الآن بإرسال إجابتك نصياً أو سجّل مقطعاً صوتياً (🎙)",
+            f"✍️ <b>وضع الرد السري على المعني (ID: <code>{target_id}</code>):</b>\n\nتفضل بإرسال ردك نصياً أو سجّل مقطعاً صوتياً (🎙)",
             parse_mode="HTML"
         )
         return
@@ -566,19 +646,43 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=pending["caption"]
         )
 
-        if pending["media_type"] == "pdf":
-            btn_text = "📥 قراءة وتحميل الكتاب"
-            start_param = f"doc_{pub_id}"
-        elif pending["media_type"] in ["audio", "voice"]:
-            btn_text = "🎧 استماع للمقطع الآن"
-            start_param = f"listen_{pub_id}"
-        else:
-            btn_text = "▶️️ مشاهدة الفيديو كاملاً"
-            start_param = f"watch_{pub_id}"
+        encoded_caption = urllib.parse.quote(pending["caption"])
 
-        channel_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(btn_text, url=f"https://t.me/{bot_me.username}?start={start_param}")
-        ]])
+        # توزيع الأزرار المعتمد بحسب نوع المادة:
+        # 1. المواد الصوتية:
+        if pending["media_type"] in ["audio", "voice"]:
+            share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=listen_{pub_id}&text={encoded_caption}"
+            channel_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🎧 الاستماع إلى المادة", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}"),
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                ],
+                [
+                    InlineKeyboardButton("📢 انشر تؤجر", url=share_url)
+                ]
+            ])
+
+        # 2. مقاطع الفيديو:
+        elif pending["media_type"] == "video":
+            share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=watch_{pub_id}&text={encoded_caption}"
+            channel_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("▶️ مشاهدة الفيديو", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}"),
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                ],
+                [
+                    InlineKeyboardButton("📢 انشر تؤجر", url=share_url)
+                ]
+            ])
+
+        # 3. ملفات الـ PDF أو الصور والبوستات (صف واحد وزرّان فقط):
+        else:
+            channel_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📥 مشاهدة / تنزيل المادة", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}"),
+                    InlineKeyboardButton("💬 سجّل تعليقك", url=f"https://t.me/{bot_me.username}?start=comment_{pub_id}")
+                ]
+            ])
 
         try:
             await context.bot.send_photo(
@@ -588,21 +692,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=channel_markup
             )
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text(f"✅ تم اعتماد المادة ونشرها في القناة بنجاح برقم تعريف: <code>{pub_id}</code>", parse_mode="HTML")
+            await query.message.reply_text(f"✅ تم النشر في القناة بنجاح بالأزرار المتفق عليها!\nرقم المنشور: <code>{pub_id}</code>", parse_mode="HTML")
             context.user_data["pending_pub"] = None
         except Exception as e:
             await query.message.reply_text(f"❌ تعذر النشر في القناة: {e}")
 
-# ----------------- نقطة انطلاق التطبيق الرئيسية -----------------
+# ----------------- الدالة الرئيسية -----------------
 def main():
-    # 1. تشغيل سيرفر فحص الحياة (UptimeRobot)
     server_thread = threading.Thread(target=run_http_server, daemon=True)
     server_thread.start()
 
-    # 2. تهيئة جداول قاعدة البيانات
     init_db()
 
-    # 3. تشغيل تطبيق التيليجرام
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_command))
