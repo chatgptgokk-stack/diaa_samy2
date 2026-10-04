@@ -181,7 +181,7 @@ def extract_pdf_cover(pdf_bytes: bytes) -> bytes:
     return img_data
 
 def extract_video_frame(video_path: str) -> bytes:
-    """استخراج كادر نقي بأبعاده الأصلية دون أي تشويه أو قص"""
+    """استخراج كادر نقي بأبعاده الأصلية دون أي تشويه أو مط"""
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_MSEC, 2000)
     success, frame = cap.read()
@@ -234,7 +234,6 @@ def create_audio_poster(title_text: str) -> bytes:
     draw.rectangle([45, 45, width - 45, height - 45], outline=(212, 175, 55), width=7)
     draw.rectangle([65, 65, width - 65, height - 65], outline=(160, 130, 40), width=2)
 
-    # زوايا زخرفية داخلية
     corner_len = 40
     for cx, cy in [(75, 75), (width - 75, 75), (75, height - 75), (width - 75, height - 75)]:
         draw.rectangle([cx - 5, cy - 5, cx + 5, cy + 5], fill=(212, 175, 55))
@@ -277,7 +276,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• لتحديث لوحة الأزرار في القناة: أرسل الأمر /menu.\n"
                 "• إرسال صوتيات: تصميم إسلامي ملكي بعد كتابة الكابشن بيدك.\n"
                 "• إرسال فيديو: كادر نقي طبيعي مع طلب الكابشن يدوياً.\n"
-                "• إرسال PDF: استخراج الصفحة الأولى كغلاف مع طلب الكابشن.\n"
+                "• إرسال PDF: استخراج الغلاف التلقائي حتى للملفات الكبيرة مع طلب الكابشن.\n"
                 "• إرسال صورة / بوستر: نشر دعوي مباشر مع طلب الكابشن."
             )
             await update.message.reply_text(admin_panel)
@@ -297,7 +296,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_question"] = True
         return
 
-    # خدمة سجل تعليقك على مادة محددة
+    # خدمة سجل تعليقك
     if payload.startswith("comment_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -387,10 +386,6 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_me = await context.bot.get_me()
 
-    # لوحة القناة المتفق عليها بالضبط:
-    # الصف الأول: الخطب | الفيديوهات
-    # الصف الثاني: الكتب | البحث
-    # الصف الثالث (عريض): اسأل الشيخ
     keyboard = [
         [
             InlineKeyboardButton("🎙 الخطب", url=f"https://t.me/{bot_me.username}?start=lectures"),
@@ -440,7 +435,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"• النوع: {'صوت' if msg.voice or msg.audio else 'نص'}\n\n"
         )
 
-        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✍️️ الإجابة على السؤال", callback_data=f"reply_{user.id}")]])
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✍️ الإجابة على السؤال", callback_data=f"reply_{user.id}")]])
 
         if msg.text:
             admin_alert += f"📝 <b>نص السؤال:</b>\n{html.escape(msg.text)}"
@@ -453,7 +448,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيجيب عليه الشيخ قريباً بإذن الله.")
         return
 
-    # 2. استلام تعليق العضو حول مادة محددة (سجّل تعليقك)
+    # 2. استلام تعليق العضو حول مادة محددة
     if context.user_data.get("awaiting_material_comment") and user.id != ADMIN_USER_ID:
         pub_id = context.user_data["awaiting_material_comment"]
         context.user_data["awaiting_material_comment"] = None
@@ -554,7 +549,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return
 
-    # 5. استقبال الملف الصوتي والتوقف لطلب الكابشن
+    # 5. استقبال الملف الصوتي
     if msg.audio or msg.voice:
         context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
         context.user_data["temp_file_id"] = (msg.voice or msg.audio).file_id
@@ -562,7 +557,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 6. استقبال مقطع الفيديو والتوقف لطلب الكابشن
+    # 6. استقبال مقطع الفيديو
     elif msg.video:
         status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
         try:
@@ -584,13 +579,26 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
-    # 7. استقبال كتاب PDF والتوقف لطلب الكابشن
+    # 7. استقبال كتاب PDF وتجاوز قيد الحجم عبر الغلاف المصغر
     elif msg.document and msg.document.mime_type == "application/pdf":
-        status_msg = await msg.reply_text("⏳ جاري استخراج الصفحة الأولى كغلاف للملف...")
+        status_msg = await msg.reply_text("⏳ جاري استخراج غلاف الكتاب...")
+        cover_bytes = None
         try:
-            tg_file = await context.bot.get_file(msg.document.file_id)
-            pdf_bytes = await tg_file.download_as_bytearray()
-            cover_bytes = extract_pdf_cover(pdf_bytes)
+            # الحل الجذري لتجاوز قيد الـ 20MB: تنزيل الصورة المصغرة الجاهزة للملف مباشرة
+            if msg.document.thumbnail:
+                thumb_file = await context.bot.get_file(msg.document.thumbnail.file_id)
+                cover_bytes = await thumb_file.download_as_bytearray()
+            
+            # إذا لم يوفر تيليجرام صورة مصغرة وكان حجم الملف مسموحاً
+            if not cover_bytes and (msg.document.file_size or 0) < 20 * 1024 * 1024:
+                tg_file = await context.bot.get_file(msg.document.file_id)
+                pdf_bytes = await tg_file.download_as_bytearray()
+                cover_bytes = extract_pdf_cover(pdf_bytes)
+
+            # خيار احتياطي في حال غياب الغلاف: تصميم كارت إسلامي يحمل اسم الملف
+            if not cover_bytes:
+                clean_filename = os.path.splitext(msg.document.file_name or "كتاب إلكتروني")[0].replace("_", " ")
+                cover_bytes = create_audio_poster(clean_filename)
 
             context.user_data["temp_media_type"] = "pdf"
             context.user_data["temp_file_id"] = msg.document.file_id
@@ -603,7 +611,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
         return
 
-    # 8. استقبال صورة أو بوستر والتوقف لطلب الكابشن
+    # 8. استقبال صورة أو بوستر
     elif msg.photo:
         photo_obj = msg.photo[-1]
         tg_file = await context.bot.get_file(photo_obj.file_id)
