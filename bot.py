@@ -14,7 +14,6 @@ import fitz  # PyMuPDF
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
-from bidi.algorithm import get_display
 
 from telethon import TelegramClient
 from telegram import (
@@ -50,7 +49,7 @@ API_HASH = os.environ.get("TELEGRAM_API_HASH", "c977fd59eb678ce870a95cb8fc6baa10
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf"
 FONT_PATH = "Amiri-Bold.ttf"
 TEMPLATE_PATH = "audio_template.jpg"
-DARK_GREEN_COLOR = (20, 75, 45)  # أخضر غامق ملكي عريض
+DARK_GREEN_COLOR = (20, 75, 45)  # أخضر داكن ملكي عريض
 
 # عميل Telethon لتنزيل الملفات الكبيرة
 telethon_client = TelegramClient("bot_session", API_ID, API_HASH)
@@ -230,17 +229,16 @@ def extract_video_frame(video_path: str) -> bytes:
 def create_audio_poster(title_text: str) -> bytes:
     ensure_arabic_font()
     
-    # 1. فتح القالب الإسلامي المعتمد
+    # 1. فتح القالب الإسلامي
     if os.path.exists(TEMPLATE_PATH):
         image = Image.open(TEMPLATE_PATH).convert("RGB")
     else:
-        # احتياطي بخلفية عاجية أنيقة في حال عدم رفع القالب
         image = Image.new("RGB", (1024, 1024), color=(248, 244, 235))
         
     width, height = image.size
     draw = ImageDraw.Draw(image)
 
-    # 2. حدود منطقة الكتابة داخل المستطيل العاجي بين الزخارف
+    # 2. أبعاد منطقة الكتابة داخل المستطيل العاجي
     box_x_min = int(width * 0.22)
     box_x_max = int(width * 0.78)
     box_y_min = int(height * 0.32)
@@ -248,16 +246,15 @@ def create_audio_poster(title_text: str) -> bytes:
     box_width = box_x_max - box_x_min
     box_height = box_y_max - box_y_min
 
-    # 3. تشبيك الحروف العربية وضبط اتجاه الـ RTL
+    # 3. تشبيك الحروف العربية دون عكس إضافي
     def format_arabic(text):
-        reshaped = arabic_reshaper.reshape(text)
-        return get_display(reshaped)
+        return arabic_reshaper.reshape(text)
 
-    # 4. حساب حجم الخط تلقائياً لاحتواء النص بالكامل
-    target_font_size = 54
+    # 4. احتواء النص وتحديد حجم الخط المناسب
+    target_font_size = 56
     words = title_text.split()
     
-    while target_font_size >= 28:
+    while target_font_size >= 26:
         try:
             font = ImageFont.truetype(FONT_PATH, target_font_size)
         except Exception:
@@ -284,7 +281,7 @@ def create_audio_poster(title_text: str) -> bytes:
             break
         target_font_size -= 4
 
-    # 5. رسم الأسطر في المنتصف باللون الأخضر الغامق وبخط عريض محاكي (Faux-bold)
+    # 5. رسم الأسطر في المنتصف باللون الأخضر الداكن وبخط عريض متصل
     start_y = box_y_min + (box_height - total_text_h) // 2
     for i, line in enumerate(lines):
         formatted_line = format_arabic(line)
@@ -657,13 +654,16 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id != ADMIN_USER_ID:
         return
 
-    # 5. استقبال ملف صوتي جديد (تصفير أي انتظار سابق فوراً)
+    # 5. استقبال ملف صوتي جديد (تصفير أي انتظار معلق)
     if msg.audio or msg.voice:
         context.user_data.clear()
         context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
         context.user_data["temp_file_id"] = (msg.voice or msg.audio).file_id
         context.user_data["awaiting_custom_caption"] = True
-        await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان على اللوحة الإسلامية الخضراء؟\nتفضل بإرسال النص الآن:")
+        await msg.reply_text(
+            "✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان على اللوحة الإسلامية الخضراء؟\nتفضل بإرسال النص الآن:",
+            parse_mode="HTML"
+        )
         return
 
     # 6. استقبال مقطع فيديو مباشر
@@ -700,7 +700,8 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             photo_file.name = "cover.jpg"
             await msg.reply_photo(
                 photo=photo_file,
-                caption="✍️ <b>تم التقاط كادر الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:"
+                caption="✍️ <b>تم التقاط كادر الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا الفيديو؟\nتفضل بإرسال النص الآن:",
+                parse_mode="HTML"
             )
         except Exception as e:
             logger.error(f"خطأ في الفيديو: {e}")
@@ -749,7 +750,8 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 photo_file.name = "cover.jpg"
                 await msg.reply_photo(
                     photo=photo_file,
-                    caption="✍️ <b>تم استخراج كادر ملف الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص به؟\nتفضل بإرسال النص الآن:"
+                    caption="✍️ <b>تم استخراج كادر ملف الفيديو بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص به؟\nتفضل بإرسال النص الآن:",
+                    parse_mode="HTML"
                 )
             except Exception as e:
                 logger.error(f"خطأ في ملف الفيديو: {e}")
@@ -785,7 +787,8 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 photo_file.name = "cover.jpg"
                 await msg.reply_photo(
                     photo=photo_file,
-                    caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:"
+                    caption="✍️ <b>تم استخراج الصفحة الأولى كغلاف للملف بنجاح.</b>\n\nماذا تحب أن نكتب في الكابشن والوصف الخاص بهذا الكتاب؟\nتفضل بإرسال النص الآن:",
+                    parse_mode="HTML"
                 )
             except Exception as e:
                 logger.error(f"خطأ غلاف PDF: {e}")
@@ -804,7 +807,10 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["temp_cover_bytes"] = bytes(img_bytes)
         context.user_data["awaiting_custom_caption"] = True
 
-        await msg.reply_text("✍️ <b>تم استلام التصميم الدعوي.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا المنشور؟\nتفضل بإرسال النص الآن:")
+        await msg.reply_text(
+            "✍️ <b>تم استلام التصميم الدعوي.</b>\n\nماذا تحب أن نكتب في الكابشن الخاص بهذا المنشور؟\nتفضل بإرسال النص الآن:",
+            parse_mode="HTML"
+        )
         return
 
     # 9. إدخال الكابشن يدوياً من المشرف
