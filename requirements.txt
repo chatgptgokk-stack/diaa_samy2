@@ -5,3 +5,5 @@ opencv-python-headless
 Pillow
 telethon
 cryptg
+arabic-reshaper
+python-bidi
