@@ -13,6 +13,8 @@ from psycopg2 import pool
 import fitz  # PyMuPDF
 import cv2
 from PIL import Image, ImageDraw, ImageFont
+import arabic_reshaper
+from bidi.algorithm import get_display
 
 from telethon import TelegramClient
 from telegram import (
@@ -47,6 +49,8 @@ API_HASH = os.environ.get("TELEGRAM_API_HASH", "c977fd59eb678ce870a95cb8fc6baa10
 
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf"
 FONT_PATH = "Amiri-Bold.ttf"
+TEMPLATE_PATH = "audio_template.jpg"
+DARK_GREEN_COLOR = (20, 75, 45)  # أخضر غامق ملكي عريض
 
 # عميل Telethon لتنزيل الملفات الكبيرة
 telethon_client = TelegramClient("bot_session", API_ID, API_HASH)
@@ -189,7 +193,7 @@ async def notify_admin_event(context: ContextTypes.DEFAULT_TYPE, title: str, pub
     except Exception as e:
         logger.error(f"فشل إرسال إشعار المشرف: {e}")
 
-# ----------------- معالجة الوسائط والأغلفة -----------------
+# ----------------- معالجة وتوليد الوسائط والأغلفة -----------------
 def ensure_arabic_font():
     if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 10000:
         try:
@@ -223,71 +227,81 @@ def extract_video_frame(video_path: str) -> bytes:
         return buffer.tobytes()
     return None
 
-def split_arabic_text(text: str, max_chars_per_line: int = 28) -> list:
-    words = text.split()
-    lines = []
-    current_line = []
-    current_length = 0
-
-    for word in words:
-        if current_length + len(word) + 1 <= max_chars_per_line:
-            current_line.append(word)
-            current_length += len(word) + 1
-        else:
-            if current_line:
-                lines.append(" ".join(current_line))
-            current_line = [word]
-            current_length = len(word)
-
-    if current_line:
-        lines.append(" ".join(current_line))
-    return lines
-
 def create_audio_poster(title_text: str) -> bytes:
     ensure_arabic_font()
-    width, height = 1080, 1080
-    image = Image.new("RGB", (width, height), color=(18, 30, 49))
+    
+    # 1. فتح القالب الإسلامي المعتمد
+    if os.path.exists(TEMPLATE_PATH):
+        image = Image.open(TEMPLATE_PATH).convert("RGB")
+    else:
+        # احتياطي بخلفية عاجية أنيقة في حال عدم رفع القالب
+        image = Image.new("RGB", (1024, 1024), color=(248, 244, 235))
+        
+    width, height = image.size
     draw = ImageDraw.Draw(image)
 
-    draw.rectangle([45, 45, width - 45, height - 45], outline=(212, 175, 55), width=7)
-    draw.rectangle([65, 65, width - 65, height - 65], outline=(160, 130, 40), width=2)
+    # 2. حدود منطقة الكتابة داخل المستطيل العاجي بين الزخارف
+    box_x_min = int(width * 0.22)
+    box_x_max = int(width * 0.78)
+    box_y_min = int(height * 0.32)
+    box_y_max = int(height * 0.68)
+    box_width = box_x_max - box_x_min
+    box_height = box_y_max - box_y_min
 
-    corner_len = 40
-    for cx, cy in [(75, 75), (width - 75, 75), (75, height - 75), (width - 75, height - 75)]:
-        draw.rectangle([cx - 5, cy - 5, cx + 5, cy + 5], fill=(212, 175, 55))
+    # 3. تشبيك الحروف العربية وضبط اتجاه الـ RTL
+    def format_arabic(text):
+        reshaped = arabic_reshaper.reshape(text)
+        return get_display(reshaped)
 
-    try:
-        title_font = ImageFont.truetype(FONT_PATH, 52)
-        footer_font = ImageFont.truetype(FONT_PATH, 36)
-    except Exception:
-        title_font = ImageFont.load_default()
-        footer_font = title_font
-
-    raw_lines = split_arabic_text(title_text, max_chars_per_line=26)
-
-    line_spacing = 25
-    line_height = 65
-    total_text_height = len(raw_lines) * line_height + (len(raw_lines) - 1) * line_spacing
-    start_y = (height - total_text_height) // 2
-
-    for i, line in enumerate(raw_lines):
-        y = start_y + i * (line_height + line_spacing)
+    # 4. حساب حجم الخط تلقائياً لاحتواء النص بالكامل
+    target_font_size = 54
+    words = title_text.split()
+    
+    while target_font_size >= 28:
         try:
-            draw.text((width // 2, y), line, fill=(245, 245, 245), font=title_font, anchor="mm", direction="rtl")
-        except TypeError:
-            draw.text((width // 2, y), line, fill=(245, 245, 245), font=title_font, anchor="mm")
+            font = ImageFont.truetype(FONT_PATH, target_font_size)
+        except Exception:
+            font = ImageFont.load_default()
 
-    footer_text = "منصة القناة الرسمية"
-    try:
-        draw.text((width // 2, height - 120), footer_text, fill=(212, 175, 55), font=footer_font, anchor="mm", direction="rtl")
-    except TypeError:
-        draw.text((width // 2, height - 120), footer_text, fill=(212, 175, 55), font=footer_font, anchor="mm")
+        lines = []
+        cur_line = []
+        for word in words:
+            test_line = " ".join(cur_line + [word])
+            line_w = font.getbbox(format_arabic(test_line))[2] - font.getbbox(format_arabic(test_line))[0]
+            if line_w <= box_width:
+                cur_line.append(word)
+            else:
+                if cur_line:
+                    lines.append(" ".join(cur_line))
+                cur_line = [word]
+        if cur_line:
+            lines.append(" ".join(cur_line))
+
+        line_height = int(target_font_size * 1.45)
+        total_text_h = len(lines) * line_height
+        
+        if total_text_h <= box_height:
+            break
+        target_font_size -= 4
+
+    # 5. رسم الأسطر في المنتصف باللون الأخضر الغامق وبخط عريض محاكي (Faux-bold)
+    start_y = box_y_min + (box_height - total_text_h) // 2
+    for i, line in enumerate(lines):
+        formatted_line = format_arabic(line)
+        bbox = font.getbbox(formatted_line)
+        text_w = bbox[2] - bbox[0]
+        x = box_x_min + (box_width - text_w) // 2
+        y = start_y + i * line_height
+
+        for offset_x in [-1, 0, 1]:
+            for offset_y in [-1, 0, 1]:
+                draw.text((x + offset_x, y + offset_y), formatted_line, fill=DARK_GREEN_COLOR, font=font)
 
     out_buffer = io.BytesIO()
     image.save(out_buffer, format="JPEG", quality=95)
     return out_buffer.getvalue()
 
-# تنزيل عبر Telethon لتجاوز حاجز الـ 20MB
+# تنزيل الملفات الكبيرة عبر Telethon
 async def download_large_file_telethon(chat_id: int, message_id: int) -> bytes:
     try:
         t_msg = await telethon_client.get_messages(chat_id, ids=message_id)
@@ -310,7 +324,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             admin_panel = (
                 "👋 مرحباً بك يا مدير القناة في لوحة التحكم الإدارية:\n\n"
                 "• لتحديث لوحة الأزرار في القناة: أرسل الأمر /menu.\n"
-                "• إرسال صوتيات: تصميم إسلامي ملكي بعد كتابة الكابشن بيدك.\n"
+                "• إرسال صوتيات: تصميم باللوحة الإسلامية الخضراء الفاخرة.\n"
                 "• إرسال فيديو (مباشر أو كملف): كادر نقي مع طلب الكابشن.\n"
                 "• إرسال PDF (مهما كان حجمه): استخراج الغلاف تلقائياً.\n"
                 "• إرسال صورة / بوستر: نشر دعوي مباشر مع طلب الكابشن."
@@ -492,6 +506,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_me = await context.bot.get_me()
 
+    # الترتيب معدل هندسياً للواجهات المعربة (RTL):
     keyboard = [
         [
             InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
@@ -642,16 +657,16 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id != ADMIN_USER_ID:
         return
 
-    # 5. ملف صوتي
+    # 5. استقبال ملف صوتي جديد (تصفير أي انتظار سابق فوراً)
     if msg.audio or msg.voice:
         context.user_data.clear()
         context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
         context.user_data["temp_file_id"] = (msg.voice or msg.audio).file_id
         context.user_data["awaiting_custom_caption"] = True
-        await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان والكابشن على البوستر الملكي؟\nتفضل بإرسال النص الآن:")
+        await msg.reply_text("✍️ <b>تم استلام المقطع الصوتي.</b>\n\nماذا تحب أن نكتب في العنوان على اللوحة الإسلامية الخضراء؟\nتفضل بإرسال النص الآن:")
         return
 
-    # 6. فيديو مباشر
+    # 6. استقبال مقطع فيديو مباشر
     if msg.video:
         context.user_data.clear()
         status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
@@ -662,7 +677,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 frame_bytes = await thumb_file.download_as_bytearray()
 
             if not frame_bytes:
-                # محاولة عبر Telethon لتجاوز أي قيد حجم
                 raw_data = await download_large_file_telethon(msg.chat_id, msg.message_id)
                 if raw_data:
                     temp_path = f"temp_vid_{msg.message_id}.mp4"
@@ -693,7 +707,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
-    # 7. مستندات (PDF وفيديوهات مرسلة كملفات - مهما بلغ الحجم)
+    # 7. استقبال المستندات (PDF وفيديوهات مرسلة كملفات)
     if msg.document:
         doc = msg.document
         mime = (doc.mime_type or "").lower()
@@ -745,7 +759,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # ب- كتاب PDF مهما كبر حجمه
         elif mime == "application/pdf" or file_name.endswith('.pdf'):
             context.user_data.clear()
-            status_msg = await msg.reply_text("⏳ جاري سحب غلاف الكتاب عبر بروتوكول تيليجرام السريع...")
+            status_msg = await msg.reply_text("⏳ جاري سحب غلاف الكتاب عبر بروتوكول تيليجرام المباشر...")
             cover_bytes = None
             try:
                 if doc.thumbnail:
@@ -753,7 +767,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     cover_bytes = await thumb_file.download_as_bytearray()
                 
                 if not cover_bytes:
-                    # سحب الملف كاملاً عبر Telethon وتجاوز حاجز الـ 20MB
                     pdf_bytes = await download_large_file_telethon(msg.chat_id, msg.message_id)
                     if pdf_bytes:
                         cover_bytes = extract_pdf_cover(pdf_bytes)
@@ -801,7 +814,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_id = context.user_data.get("temp_file_id")
         context.user_data["awaiting_custom_caption"] = False
 
-        status_msg = await msg.reply_text("⏳ جاري تجهيز المعاينة والتصميم بالعنوان الذي كتبته...")
+        status_msg = await msg.reply_text("⏳ جاري توليد المعاينة على اللوحة الإسلامية بالعنوان المطلوب...")
 
         if pending_type in ["audio", "voice"]:
             poster_bytes = create_audio_poster(custom_caption)
