@@ -48,7 +48,7 @@ API_HASH = os.environ.get("TELEGRAM_API_HASH", "c977fd59eb678ce870a95cb8fc6baa10
 
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf"
 FONT_PATH = "Amiri-Bold.ttf"
-TEMPLATE_PATH = "audio_template.jpg"
+TEMPLATE_PATH = "IMG-20261005-WA0025.jpg"
 DARK_GREEN_COLOR = (20, 75, 45)  # أخضر داكن ملكي عريض
 
 # عميل Telethon لتنزيل الملفات الكبيرة
