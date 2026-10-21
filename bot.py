@@ -229,7 +229,7 @@ def extract_video_frame(video_path: str) -> bytes:
 def create_audio_poster(title_text: str) -> bytes:
     ensure_arabic_font()
     
-    # 1. فتح القالب الإسلامي
+    # 1. فتح القالب الإسلامي المعتمد
     if os.path.exists(TEMPLATE_PATH):
         image = Image.open(TEMPLATE_PATH).convert("RGB")
     else:
@@ -246,7 +246,7 @@ def create_audio_poster(title_text: str) -> bytes:
     box_width = box_x_max - box_x_min
     box_height = box_y_max - box_y_min
 
-    # 3. تشبيك الحروف العربية دون عكس إضافي
+    # 3. تشبيك الحروف العربية
     def format_arabic(text):
         return arabic_reshaper.reshape(text)
 
@@ -310,6 +310,15 @@ async def download_large_file_telethon(chat_id: int, message_id: int) -> bytes:
         logger.error(f"خطأ أثناء التحميل عبر Telethon: {e}")
     return None
 
+# ----------------- أمر استخراج رابط القناة المباشر -----------------
+async def get_channel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_USER_ID:
+        try:
+            invite_link = await context.bot.export_chat_invite_link(chat_id=CHANNEL_ID)
+            await update.message.reply_text(f"🔗 <b>رابط الدخول المباشر للقناة:</b>\n{invite_link}", parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"❌ تعذر استخراج الرابط: {e}")
+
 # ----------------- معالجات الأوامر والروابط -----------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -321,6 +330,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             admin_panel = (
                 "👋 مرحباً بك يا مدير القناة في لوحة التحكم الإدارية:\n\n"
                 "• لتحديث لوحة الأزرار في القناة: أرسل الأمر /menu.\n"
+                "• لمعرفة رابط القناة المباشر: أرسل الأمر /getlink.\n"
                 "• إرسال صوتيات: تصميم باللوحة الإسلامية الخضراء الفاخرة.\n"
                 "• إرسال فيديو (مباشر أو كملف): كادر نقي مع طلب الكابشن.\n"
                 "• إرسال PDF (مهما كان حجمه): استخراج الغلاف تلقائياً.\n"
@@ -503,7 +513,6 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_me = await context.bot.get_me()
 
-    # الترتيب معدل هندسياً للواجهات المعربة (RTL):
     keyboard = [
         [
             InlineKeyboardButton("🎬 الفيديوهات", url=f"https://t.me/{bot_me.username}?start=videos"),
@@ -956,6 +965,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("menu", menu_command))
+    app.add_handler(CommandHandler("getlink", get_channel_link))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_media))
 
