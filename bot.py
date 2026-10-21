@@ -51,10 +51,10 @@ FONT_PATH = "Amiri-Bold.ttf"
 TEMPLATE_PATH = "IMG-20261005-WA0025.jpg"
 DARK_GREEN_COLOR = (20, 75, 45)
 
-# عميل Telethon لتنزيل الملفات الكبيرة
+# عميل Telethon لتنزيل الوسائط والملفات الكبيرة
 telethon_client = TelegramClient("bot_session", API_ID, API_HASH)
 
-# ----------------- خادم الويب لمراقبة UptimeRobot -----------------
+# ----------------- خادم المراقبة لمنع الخمول -----------------
 class SimpleHealthHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
@@ -73,25 +73,21 @@ class SimpleHealthHandler(BaseHTTPRequestHandler):
 def run_http_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), SimpleHealthHandler)
-    logger.info(f"تم تشغيل خادم المراقبة على المنفذ: {port}")
+    logger.info(f"تم تشغيل خادم المراقبة المستمرة على المنفذ: {port}")
     server.serve_forever()
 
-# ----------------- قاعدة بيانات Supabase (وضع الطوارئ الآمن) -----------------
-def get_db_connection():
-    if not DATABASE_URL:
-        return None
-    try:
-        return psycopg2.connect(DATABASE_URL)
-    except Exception as e:
-        logger.error(f"تعذر الاتصال بقاعدة البيانات: {e}")
-        return None
+# ----------------- إدارة قاعدة البيانات المستقرة (Neon Pool) -----------------
+db_pool = None
 
 def init_db():
-    conn = get_db_connection()
-    if not conn:
-        logger.warning("⚠️ تنبيه: تم تشغيل البوت بدون اتصال بقاعدة البيانات (وضع الطوارئ).")
+    global db_pool
+    if not DATABASE_URL:
+        logger.error("لم يتم العثور على DATABASE_URL في متغيرات البيئة!")
         return
+
     try:
+        db_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
+        conn = db_pool.getconn()
         cur = conn.cursor()
         cur.execute("""
         CREATE TABLE IF NOT EXISTS publications (
@@ -116,16 +112,18 @@ def init_db():
         """)
         conn.commit()
         cur.close()
-        conn.close()
-        logger.info("تم التحقق من جداول قاعدة البيانات بنجاح.")
+        db_pool.putconn(conn)
+        logger.info("تم التحقق من جداول قاعدة البيانات وتهيئة المجمع بنجاح.")
     except Exception as e:
-        logger.error(f"خطأ أثناء التحقق من الجداول: {e}")
+        logger.error(f"خطأ أثناء تهيئة قاعدة البيانات: {e}")
 
 def save_publication(media_type, file_id, cover_file_id, caption):
-    conn = get_db_connection()
-    if not conn:
+    global db_pool
+    if not db_pool:
         return 1
+    conn = None
     try:
+        conn = db_pool.getconn()
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO publications (media_type, file_id, cover_file_id, caption) VALUES (%s, %s, %s, %s) RETURNING id;",
@@ -134,32 +132,40 @@ def save_publication(media_type, file_id, cover_file_id, caption):
         pub_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
-        conn.close()
         return pub_id
     except Exception as e:
         logger.error(f"خطأ حفظ المنشور: {e}")
         return 1
+    finally:
+        if conn and db_pool:
+            db_pool.putconn(conn)
 
 def get_publication(pub_id):
-    conn = get_db_connection()
-    if not conn:
+    global db_pool
+    if not db_pool:
         return None
+    conn = None
     try:
+        conn = db_pool.getconn()
         cur = conn.cursor()
         cur.execute("SELECT media_type, file_id, cover_file_id, caption FROM publications WHERE id = %s;", (pub_id,))
         row = cur.fetchone()
         cur.close()
-        conn.close()
         return row
     except Exception as e:
-        logger.error(f"خطأ جلب المنشور: {e}")
+        logger.error(f"خطأ استرجاع المنشور: {e}")
         return None
+    finally:
+        if conn and db_pool:
+            db_pool.putconn(conn)
 
 def get_publications_by_type(media_types: tuple, limit=10):
-    conn = get_db_connection()
-    if not conn:
+    global db_pool
+    if not db_pool:
         return []
+    conn = None
     try:
+        conn = db_pool.getconn()
         cur = conn.cursor()
         cur.execute(
             "SELECT id, caption FROM publications WHERE media_type IN %s ORDER BY id DESC LIMIT %s;",
@@ -167,17 +173,21 @@ def get_publications_by_type(media_types: tuple, limit=10):
         )
         rows = cur.fetchall()
         cur.close()
-        conn.close()
         return rows
     except Exception as e:
-        logger.error(f"خطأ جلب المواد: {e}")
+        logger.error(f"خطأ استرجاع المواد حسب النوع: {e}")
         return []
+    finally:
+        if conn and db_pool:
+            db_pool.putconn(conn)
 
 def search_publications(query_str: str, limit=10):
-    conn = get_db_connection()
-    if not conn:
+    global db_pool
+    if not db_pool:
         return []
+    conn = None
     try:
+        conn = db_pool.getconn()
         cur = conn.cursor()
         cur.execute(
             "SELECT id, media_type, caption FROM publications WHERE caption ILIKE %s ORDER BY id DESC LIMIT %s;",
@@ -185,17 +195,21 @@ def search_publications(query_str: str, limit=10):
         )
         rows = cur.fetchall()
         cur.close()
-        conn.close()
         return rows
     except Exception as e:
-        logger.error(f"خطأ البحث: {e}")
+        logger.error(f"خطأ البحث في المواد: {e}")
         return []
+    finally:
+        if conn and db_pool:
+            db_pool.putconn(conn)
 
 def log_event(pub_id, action_type, user):
-    conn = get_db_connection()
-    if not conn:
+    global db_pool
+    if not db_pool:
         return
+    conn = None
     try:
+        conn = db_pool.getconn()
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO analytics (publication_id, action_type, user_id, user_name, username) VALUES (%s, %s, %s, %s, %s);",
@@ -203,11 +217,13 @@ def log_event(pub_id, action_type, user):
         )
         conn.commit()
         cur.close()
-        conn.close()
     except Exception as e:
-        logger.error(f"خطأ في تسجيل الإحصائيات: {e}")
+        logger.error(f"خطأ تسجيل الإحصائية: {e}")
+    finally:
+        if conn and db_pool:
+            db_pool.putconn(conn)
 
-# ----------------- دالة إرسال إشعار سري آمن للمشرف بصيغة HTML -----------------
+# ----------------- التنبيهات الإدارية -----------------
 async def notify_admin_event(context: ContextTypes.DEFAULT_TYPE, title: str, pub_id: int, user):
     clean_name = html.escape(user.full_name or "بدون اسم")
     uname = f"@{user.username}" if user.username else "بدون معرف"
@@ -224,18 +240,18 @@ async def notify_admin_event(context: ContextTypes.DEFAULT_TYPE, title: str, pub
             parse_mode="HTML"
         )
     except Exception as e:
-        logger.error(f"فشل إرسال إشعار المشرف: {e}")
+        logger.error(f"تعذر إرسال تنبيه المشرف: {e}")
 
-# ----------------- معالجة وتوليد الوسائط والأغلفة -----------------
+# ----------------- معالجة وتوليد الأغلفة والوسائط -----------------
 def ensure_arabic_font():
     if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 10000:
         try:
-            logger.info("جاري تحميل الخط العربي Amiri-Bold...")
+            logger.info("جاري تنزيل الخط العربي المعتمد...")
             headers = {'User-Agent': 'Mozilla/5.0'}
             req = urllib.request.Request(FONT_URL, headers=headers)
             with urllib.request.urlopen(req) as response, open(FONT_PATH, 'wb') as out_file:
                 out_file.write(response.read())
-            logger.info("تم تحميل الخط العربي بنجاح.")
+            logger.info("تم تنزيل الخط العربي بنجاح.")
         except Exception as e:
             logger.error(f"فشل تحميل الخط العربي: {e}")
 
@@ -335,19 +351,17 @@ async def download_large_file_telethon(chat_id: int, message_id: int) -> bytes:
             await telethon_client.download_media(t_msg.media, file=out_bio)
             return out_bio.getvalue()
     except Exception as e:
-        logger.error(f"خطأ أثناء التحميل عبر Telethon: {e}")
+        logger.error(f"خطأ أثناء التحميل بواسطة Telethon: {e}")
     return None
 
-# ----------------- أمر استخراج رابط القناة المباشر -----------------
+# ----------------- الأوامر ومعالجة روابط الزوار -----------------
 async def get_channel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     try:
         invite_link = await context.bot.export_chat_invite_link(chat_id=CHANNEL_ID)
         await update.message.reply_text(f"🔗 <b>رابط الدخول المباشر للقناة:</b>\n{invite_link}", parse_mode="HTML")
     except Exception as e:
-        await update.message.reply_text(f"❌ حدث خطأ أثناء جلب الرابط:\n<code>{html.escape(str(e))}</code>\n\nمعرف حسابك: <code>{user_id}</code>", parse_mode="HTML")
+        await update.message.reply_text(f"❌ تعذر استخراج الرابط:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
-# ----------------- معالجات الأوامر والروابط -----------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
@@ -356,17 +370,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         if user.id == ADMIN_USER_ID:
             admin_panel = (
-                "👋 مرحباً بك يا مدير القناة في لوحة التحكم الإدارية:\n\n"
-                "• لتحديث لوحة الأزرار في القناة: أرسل الأمر /menu.\n"
-                "• لمعرفة رابط القناة المباشر: أرسل الأمر /getlink.\n"
-                "• إرسال صوتيات: تصميم باللوحة الإسلامية الخضراء الفاخرة.\n"
-                "• إرسال فيديو (مباشر أو كملف): كادر نقي مع طلب الكابشن.\n"
-                "• إرسال PDF (مهما كان حجمه): استخراج الغلاف تلقائياً.\n"
-                "• إرسال صورة / بوستر: نشر دعوي مباشر مع طلب الكابشن."
+                "👋 <b>لوحة التحكم الإدارية للقناة:</b>\n\n"
+                "• لتحديث ونشر لوحة الأزرار في القناة: /menu\n"
+                "• لاستخراج رابط القناة المباشر: /getlink\n"
+                "• إرسال صوتيات: توليد بوستر اللوحة الخضراء الفاخرة.\n"
+                "• إرسال فيديو / كملف: التقاط كادر نقي وطلب الكابشن.\n"
+                "• إرسال PDF: استخراج صفحة الغلاف تلقائياً.\n"
+                "• إرسال صور: اعتماد النشر المباشر مع الأزرار التفاعلية."
             )
-            await update.message.reply_text(admin_panel)
+            await update.message.reply_text(admin_panel, parse_mode="HTML")
         else:
-            await update.message.reply_text("أهلاً بك! يمكنك تصفح مواد القناة وخدماتها من خلال الأزرار التفاعلية المرفقة بالمنشورات.")
+            await update.message.reply_text("أهلاً بك! يمكنك تصفح مواد القناة وخدماتها عبر الأزرار التفاعلية في منشورات القناة.")
         return
 
     payload = args[0]
@@ -376,14 +390,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rows:
             await update.message.reply_text("🎙 <b>قسم الخطب والمحاضرات:</b>\n\nلا توجد خطب منشورة حالياً في الأرشيف.", parse_mode="HTML")
             return
-        
         keyboard = []
         for pub_id, caption in rows:
             title = (caption.split("\n")[0])[:35] if caption else f"مقطع صوتي رقم {pub_id}"
             keyboard.append([InlineKeyboardButton(f"🎧 {title}", url=f"https://t.me/{bot_me.username}?start=listen_{pub_id}")])
-            
         await update.message.reply_text(
-            "🎙 <b>أرشيف الخطب والمحاضرات الصوتية:</b>\n\nتفضل باختيار المادة للاستماع إليها مباشرة:",
+            "🎙 <b>أرشيف الخطب والمحاضرات الصوتية:</b>\n\nاختر المادة للاستماع إليها مباشرة:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
@@ -394,14 +406,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rows:
             await update.message.reply_text("🎬 <b>قسم الفيديوهات:</b>\n\nلا توجد مقاطع فيديو منشورة حالياً في الأرشيف.", parse_mode="HTML")
             return
-
         keyboard = []
         for pub_id, caption in rows:
             title = (caption.split("\n")[0])[:35] if caption else f"فيديو رقم {pub_id}"
             keyboard.append([InlineKeyboardButton(f"▶️ {title}", url=f"https://t.me/{bot_me.username}?start=watch_{pub_id}")])
-
         await update.message.reply_text(
-            "🎬 <b>أرشيف المرئيات والفيديوهات:</b>\n\nتفضل باختيار المقطع لمشاهدته مباشرة:",
+            "🎬 <b>أرشيف المرئيات والفيديوهات:</b>\n\nاختر المقطع لمشاهدته مباشرة:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
@@ -412,14 +422,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rows:
             await update.message.reply_text("📚 <b>قسم الكتب والمؤلفات:</b>\n\nلا توجد كتب مضافة حالياً في الأرشيف.", parse_mode="HTML")
             return
-
         keyboard = []
         for pub_id, caption in rows:
             title = (caption.split("\n")[0])[:35] if caption else f"كتاب رقم {pub_id}"
             keyboard.append([InlineKeyboardButton(f"📖 {title}", url=f"https://t.me/{bot_me.username}?start=doc_{pub_id}")])
-
         await update.message.reply_text(
-            "📚 <b>مكتبة الكتب والمطبوعات:</b>\n\nتفضل باختيار الكتاب لتنزيله وتصفحه:",
+            "📚 <b>مكتبة الكتب والمطبوعات:</b>\n\nاختر الكتاب لتنزيله وتصفحه:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
@@ -428,7 +436,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if payload == "search":
         context.user_data["awaiting_search_query"] = True
         await update.message.reply_text(
-            "🔎 <b>البحث في محتوى القناة:</b>\n\nتفضل بكتابة الكلمة أو العنوان الذي تبحث عنه الآن:",
+            "🔎 <b>البحث في محتوى القناة:</b>\n\nأرسل الكلمة أو العنوان الذي تبحث عنه الآن:",
             parse_mode="HTML"
         )
         return
@@ -436,7 +444,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if payload == "ask_admin":
         context.user_data["awaiting_question"] = True
         await update.message.reply_text(
-            "🔒 مرحباً بك في خدمة (إسأل الشيخ) الخاصة:\n\n"
+            "🔒 مرحباً بك في خدمة (اسأل الشيخ) الخاصة:\n\n"
             "هذه المحادثة سرية ومشفرة تماماً بينك وبين الشيخ.\n"
             "تفضل بكتابة سؤالك الآن نصياً أو سجّل مقطعاً صوتياً (🎙):"
         )
@@ -524,7 +532,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_video(video=file_id, caption=cap or "", parse_mode="HTML")
 
-# ----------------- نشر وتحديث لوحة /menu في القناة -----------------
+# ----------------- نشر وتحديث لوحة القناة التفاعلية -----------------
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         return
@@ -562,8 +570,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ تعذر نشر اللوحة في القناة: {e}")
 
-# ----------------- استقبال وتجهيز المواد للنشر من المشرف والردود -----------------
-async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----------------- معالجة رسائل المشرف والمتابعين -----------------
+async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
     bot_me = await context.bot.get_me()
@@ -725,7 +733,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="HTML"
             )
         except Exception as e:
-            logger.error(f"خطأ في الفيديو: {e}")
+            logger.error(f"خطأ في معالجة الفيديو: {e}")
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
@@ -773,13 +781,13 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     parse_mode="HTML"
                 )
             except Exception as e:
-                logger.error(f"خطأ في ملف الفيديو: {e}")
+                logger.error(f"خطأ في استخراج كادر الملف المرئي: {e}")
                 await status_msg.edit_text(f"❌ تعذر معالجة ملف الفيديو: {e}")
             return
 
         elif mime == "application/pdf" or file_name.endswith('.pdf'):
             context.user_data.clear()
-            status_msg = await msg.reply_text("⏳ جاري سحب غلاف الكتاب عبر بروتوكول تيليجرام المباشر...")
+            status_msg = await msg.reply_text("⏳ جاري سحب غلاف الكتاب تلقائياً...")
             cover_bytes = None
             try:
                 if doc.thumbnail:
@@ -836,7 +844,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_id = context.user_data.get("temp_file_id")
         context.user_data["awaiting_custom_caption"] = False
 
-        status_msg = await msg.reply_text("⏳ جاري توليد المعاينة على اللوحة الإسلامية بالعنوان المطلوب...")
+        status_msg = await msg.reply_text("⏳ جاري توليد المعاينة بالعنوان المطلوب...")
 
         if pending_type in ["audio", "voice"]:
             poster_bytes = create_audio_poster(custom_caption)
@@ -877,7 +885,7 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return
 
-# ----------------- معالجة الأزرار والنشر -----------------
+# ----------------- معالجة الأزرار ونشر المادة بالقناة -----------------
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -953,7 +961,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(f"✅ تم النشر في القناة بنجاح بالأزرار المتفق عليها!\nرقم المنشور: <code>{pub_id}</code>", parse_mode="HTML")
             context.user_data["pending_pub"] = None
         except Exception as e:
-            logger.error(f"خطأ في النشر: {e}")
+            logger.error(f"خطأ أثناء النشر بالقناة: {e}")
             await query.message.reply_text(f"❌ تعذر النشر في القناة: {e}")
 
 # ----------------- الدالة الرئيسية -----------------
@@ -973,9 +981,9 @@ def main():
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("getlink", get_channel_link))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_media))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
 
-    logger.info("تم بدء استماع البوت رسمياً...")
+    logger.info("تم تشغيل البوت بنظام الاتصال الثابت الدائم...")
     app.run_polling()
 
 if __name__ == "__main__":
