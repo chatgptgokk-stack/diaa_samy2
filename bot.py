@@ -49,7 +49,7 @@ API_HASH = os.environ.get("TELEGRAM_API_HASH", "c977fd59eb678ce870a95cb8fc6baa10
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf"
 FONT_PATH = "Amiri-Bold.ttf"
 TEMPLATE_PATH = "IMG-20261005-WA0025.jpg"
-DARK_GREEN_COLOR = (20, 75, 45)  # أخضر داكن ملكي عريض
+DARK_GREEN_COLOR = (20, 75, 45)
 
 # عميل Telethon لتنزيل الملفات الكبيرة
 telethon_client = TelegramClient("bot_session", API_ID, API_HASH)
@@ -76,92 +76,126 @@ def run_http_server():
     logger.info(f"تم تشغيل خادم المراقبة على المنفذ: {port}")
     server.serve_forever()
 
-# ----------------- قاعدة بيانات Supabase (PostgreSQL) -----------------
+# ----------------- قاعدة بيانات Supabase (وضع الطوارئ الآمن) -----------------
 def get_db_connection():
     if not DATABASE_URL:
-        raise ValueError("DATABASE_URL غير محدد في المتغيرات!")
-    return psycopg2.connect(DATABASE_URL)
+        return None
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        logger.error(f"تعذر الاتصال بقاعدة البيانات: {e}")
+        return None
 
 def init_db():
     conn = get_db_connection()
-    cur = conn.cursor()
-    
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS publications (
-        id SERIAL PRIMARY KEY,
-        media_type VARCHAR(50),
-        file_id TEXT,
-        cover_file_id TEXT,
-        caption TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS analytics (
-        id SERIAL PRIMARY KEY,
-        publication_id INT,
-        action_type VARCHAR(50),
-        user_id BIGINT,
-        user_name TEXT,
-        username TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-    logger.info("تم التحقق من جداول قاعدة البيانات بنجاح.")
+    if not conn:
+        logger.warning("⚠️ تنبيه: تم تشغيل البوت بدون اتصال بقاعدة البيانات (وضع الطوارئ).")
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS publications (
+            id SERIAL PRIMARY KEY,
+            media_type VARCHAR(50),
+            file_id TEXT,
+            cover_file_id TEXT,
+            caption TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS analytics (
+            id SERIAL PRIMARY KEY,
+            publication_id INT,
+            action_type VARCHAR(50),
+            user_id BIGINT,
+            user_name TEXT,
+            username TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("تم التحقق من جداول قاعدة البيانات بنجاح.")
+    except Exception as e:
+        logger.error(f"خطأ أثناء التحقق من الجداول: {e}")
 
 def save_publication(media_type, file_id, cover_file_id, caption):
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO publications (media_type, file_id, cover_file_id, caption) VALUES (%s, %s, %s, %s) RETURNING id;",
-        (media_type, file_id, cover_file_id, caption)
-    )
-    pub_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    conn.close()
-    return pub_id
+    if not conn:
+        return 1
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO publications (media_type, file_id, cover_file_id, caption) VALUES (%s, %s, %s, %s) RETURNING id;",
+            (media_type, file_id, cover_file_id, caption)
+        )
+        pub_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return pub_id
+    except Exception as e:
+        logger.error(f"خطأ حفظ المنشور: {e}")
+        return 1
 
 def get_publication(pub_id):
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT media_type, file_id, cover_file_id, caption FROM publications WHERE id = %s;", (pub_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT media_type, file_id, cover_file_id, caption FROM publications WHERE id = %s;", (pub_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row
+    except Exception as e:
+        logger.error(f"خطأ جلب المنشور: {e}")
+        return None
 
 def get_publications_by_type(media_types: tuple, limit=10):
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, caption FROM publications WHERE media_type IN %s ORDER BY id DESC LIMIT %s;",
-        (media_types, limit)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, caption FROM publications WHERE media_type IN %s ORDER BY id DESC LIMIT %s;",
+            (media_types, limit)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error(f"خطأ جلب المواد: {e}")
+        return []
 
 def search_publications(query_str: str, limit=10):
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, media_type, caption FROM publications WHERE caption ILIKE %s ORDER BY id DESC LIMIT %s;",
-        (f"%{query_str}%", limit)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, media_type, caption FROM publications WHERE caption ILIKE %s ORDER BY id DESC LIMIT %s;",
+            (f"%{query_str}%", limit)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error(f"خطأ البحث: {e}")
+        return []
 
 def log_event(pub_id, action_type, user):
+    conn = get_db_connection()
+    if not conn:
+        return
     try:
-        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO analytics (publication_id, action_type, user_id, user_name, username) VALUES (%s, %s, %s, %s, %s);",
@@ -229,7 +263,6 @@ def extract_video_frame(video_path: str) -> bytes:
 def create_audio_poster(title_text: str) -> bytes:
     ensure_arabic_font()
     
-    # 1. فتح القالب الإسلامي المعتمد
     if os.path.exists(TEMPLATE_PATH):
         image = Image.open(TEMPLATE_PATH).convert("RGB")
     else:
@@ -238,7 +271,6 @@ def create_audio_poster(title_text: str) -> bytes:
     width, height = image.size
     draw = ImageDraw.Draw(image)
 
-    # 2. أبعاد منطقة الكتابة داخل المستطيل العاجي
     box_x_min = int(width * 0.22)
     box_x_max = int(width * 0.78)
     box_y_min = int(height * 0.32)
@@ -246,11 +278,9 @@ def create_audio_poster(title_text: str) -> bytes:
     box_width = box_x_max - box_x_min
     box_height = box_y_max - box_y_min
 
-    # 3. تشبيك الحروف العربية
     def format_arabic(text):
         return arabic_reshaper.reshape(text)
 
-    # 4. احتواء النص وتحديد حجم الخط المناسب
     target_font_size = 56
     words = title_text.split()
     
@@ -281,7 +311,6 @@ def create_audio_poster(title_text: str) -> bytes:
             break
         target_font_size -= 4
 
-    # 5. رسم الأسطر في المنتصف باللون الأخضر الداكن وبخط عريض متصل
     start_y = box_y_min + (box_height - total_text_h) // 2
     for i, line in enumerate(lines):
         formatted_line = format_arabic(line)
@@ -298,7 +327,6 @@ def create_audio_poster(title_text: str) -> bytes:
     image.save(out_buffer, format="JPEG", quality=95)
     return out_buffer.getvalue()
 
-# تنزيل الملفات الكبيرة عبر Telethon
 async def download_large_file_telethon(chat_id: int, message_id: int) -> bytes:
     try:
         t_msg = await telethon_client.get_messages(chat_id, ids=message_id)
@@ -312,12 +340,12 @@ async def download_large_file_telethon(chat_id: int, message_id: int) -> bytes:
 
 # ----------------- أمر استخراج رابط القناة المباشر -----------------
 async def get_channel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_USER_ID:
-        try:
-            invite_link = await context.bot.export_chat_invite_link(chat_id=CHANNEL_ID)
-            await update.message.reply_text(f"🔗 <b>رابط الدخول المباشر للقناة:</b>\n{invite_link}", parse_mode="HTML")
-        except Exception as e:
-            await update.message.reply_text(f"❌ تعذر استخراج الرابط: {e}")
+    user_id = update.effective_user.id
+    try:
+        invite_link = await context.bot.export_chat_invite_link(chat_id=CHANNEL_ID)
+        await update.message.reply_text(f"🔗 <b>رابط الدخول المباشر للقناة:</b>\n{invite_link}", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ حدث خطأ أثناء جلب الرابط:\n<code>{html.escape(str(e))}</code>\n\nمعرف حسابك: <code>{user_id}</code>", parse_mode="HTML")
 
 # ----------------- معالجات الأوامر والروابط -----------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -343,7 +371,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     payload = args[0]
 
-    # 1. قسم الخطب والمحاضرات الصوتية
     if payload == "lectures":
         rows = get_publications_by_type(("audio", "voice"), limit=10)
         if not rows:
@@ -362,7 +389,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 2. قسم المرئيات والفيديوهات
     if payload == "videos":
         rows = get_publications_by_type(("video", "video_doc"), limit=10)
         if not rows:
@@ -381,7 +407,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 3. قسم الكتب والمؤلفات
     if payload == "books":
         rows = get_publications_by_type(("pdf",), limit=10)
         if not rows:
@@ -400,17 +425,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 4. خدمة البحث في المحتوى
     if payload == "search":
         context.user_data["awaiting_search_query"] = True
         await update.message.reply_text(
-            "🔎 <b>البحث في محتوى القناة:</b>\n\n"
-            "تفضل بكتابة الكلمة أو العنوان الذي تبحث عنه الآن:",
+            "🔎 <b>البحث في محتوى القناة:</b>\n\nتفضل بكتابة الكلمة أو العنوان الذي تبحث عنه الآن:",
             parse_mode="HTML"
         )
         return
 
-    # 5. خدمة إسأل الشيخ
     if payload == "ask_admin":
         context.user_data["awaiting_question"] = True
         await update.message.reply_text(
@@ -420,7 +442,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 6. خدمة سجل تعليقك
     if payload.startswith("comment_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -435,12 +456,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"💬 <b>تسجيل تعليق حول المادة:</b>\n"
             f"« {pub_title} »\n\n"
-            f"تفضل بكتابة تعليقك أو انطباعك الآن (نصاً أو تسجيلاً صوتياً 🎙)، وسيصل مباشرة للإدارة في سرية تامة:",
+            f"تفضل بكتابة تعليقك الآن (نصاً أو صوتاً 🎙):",
             parse_mode="HTML"
         )
         return
 
-    # 7. استماع لتسجيل صوتي
     if payload.startswith("listen_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -462,7 +482,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_audio(audio=file_id, caption=cap or "", parse_mode="HTML")
 
-    # 8. فتح / تحميل كتاب PDF أو صورة
     elif payload.startswith("doc_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -484,7 +503,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_document(document=file_id, caption=cap or "", parse_mode="HTML")
 
-    # 9. مشاهدة مقطع فيديو
     elif payload.startswith("watch_"):
         try:
             pub_id = int(payload.split("_")[1])
@@ -550,7 +568,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg = update.message
     bot_me = await context.bot.get_me()
 
-    # 1. تنفيذ البحث
     if context.user_data.get("awaiting_search_query") and msg.text:
         context.user_data["awaiting_search_query"] = False
         search_kw = msg.text.strip()
@@ -581,7 +598,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    # 2. استلام سؤال خاص للشيخ
     if context.user_data.get("awaiting_question"):
         context.user_data["awaiting_question"] = False
         clean_name = html.escape(user.full_name or "بدون اسم")
@@ -607,7 +623,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ تم استلام سؤالك في سرية تامة، وسيجيب عليه الشيخ قريباً بإذن الله.")
         return
 
-    # 3. استلام تعليق العضو
     if context.user_data.get("awaiting_material_comment"):
         pub_id = context.user_data["awaiting_material_comment"]
         context.user_data["awaiting_material_comment"] = None
@@ -636,7 +651,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.reply_text("✅ شكراً لك، تم تسجيل تعليقك وإرساله للإدارة بنجاح.")
         return
 
-    # 4. إرسال رد المشرف
     if user.id == ADMIN_USER_ID and context.user_data.get("answering_user_id"):
         target_id = context.user_data["answering_user_id"]
         try:
@@ -663,7 +677,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id != ADMIN_USER_ID:
         return
 
-    # 5. استقبال ملف صوتي جديد (تصفير أي انتظار معلق)
     if msg.audio or msg.voice:
         context.user_data.clear()
         context.user_data["temp_media_type"] = "voice" if msg.voice else "audio"
@@ -675,7 +688,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    # 6. استقبال مقطع فيديو مباشر
     if msg.video:
         context.user_data.clear()
         status_msg = await msg.reply_text("⏳ جاري استخراج كادر نقي بأبعاده الطبيعية من الفيديو...")
@@ -717,14 +729,12 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.edit_text(f"❌ تعذر معالجة الفيديو: {e}")
         return
 
-    # 7. استقبال المستندات (PDF وفيديوهات مرسلة كملفات)
     if msg.document:
         doc = msg.document
         mime = (doc.mime_type or "").lower()
         file_name = (doc.file_name or "").lower()
         video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.rmvb', '.flv', '.3gp')
 
-        # أ- فيديو كمستند
         if mime.startswith("video/") or file_name.endswith(video_extensions):
             context.user_data.clear()
             status_msg = await msg.reply_text("⏳ جاري سحب كادر ملف الفيديو...")
@@ -767,7 +777,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await status_msg.edit_text(f"❌ تعذر معالجة ملف الفيديو: {e}")
             return
 
-        # ب- كتاب PDF مهما كبر حجمه
         elif mime == "application/pdf" or file_name.endswith('.pdf'):
             context.user_data.clear()
             status_msg = await msg.reply_text("⏳ جاري سحب غلاف الكتاب عبر بروتوكول تيليجرام المباشر...")
@@ -804,7 +813,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await status_msg.edit_text(f"❌ تعذر استخراج الغلاف: {e}")
             return
 
-    # 8. صورة أو تصميم
     if msg.photo:
         context.user_data.clear()
         photo_obj = msg.photo[-1]
@@ -822,7 +830,6 @@ async def handle_admin_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    # 9. إدخال الكابشن يدوياً من المشرف
     if context.user_data.get("awaiting_custom_caption") and msg.text:
         custom_caption = msg.text.strip()
         pending_type = context.user_data.get("temp_media_type")
@@ -901,7 +908,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         encoded_caption = urllib.parse.quote(pending["caption"])
 
-        # توزيع الأزرار RTL (اليمين للمادة واليسار للتعليق)
         if pending["media_type"] in ["audio", "voice"]:
             share_url = f"https://t.me/share/url?url=https://t.me/{bot_me.username}?start=listen_{pub_id}&text={encoded_caption}"
             channel_markup = InlineKeyboardMarkup([
